@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openfimi"
+version = "0.1.0"
+description = "Control, telemetry and FPV video for FIMI X8 Mini drones from Linux, through the remote controller"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "openfimi contributors" }]
+keywords = ["fimi", "x8", "drone", "uav", "usb-gadget", "android-open-accessory"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Hardware",
+]
+dependencies = []
+
+[project.optional-dependencies]
+activation = ["cryptography>=41"]
+dev = ["pytest>=7", "cryptography>=41", "ruff>=0.4"]
+
+[project.scripts]
+openfimi = "openfimi.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/smnz/openfimi"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openfimi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B027", "E731"]

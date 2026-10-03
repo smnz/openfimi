@@ -1,0 +1,13 @@
+{
+  "speed_ms": 5,
+  "heading": "free",
+  "finish": "hover",
+  "rc_lost": "exit",
+  "waypoints": [
+    {"lat": -43.5319, "lon": 172.6362, "alt_m": 20, "action": "hover_photo",
+     "poi": [-43.5274, 172.6362, 20]},
+    {"lat": -43.5319, "lon": 172.6367, "alt_m": 20, "action": {"preset": "photo", "count": 3},
+     "poi": [-43.5274, 172.6367, 20]},
+    {"lat": -43.5321, "lon": 172.6367, "alt_m": 25, "action": "none"}
+  ]
+}
