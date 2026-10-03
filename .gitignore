@@ -10,3 +10,10 @@ build/
 *.h264
 *.h265
 *.apk
+captures/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml

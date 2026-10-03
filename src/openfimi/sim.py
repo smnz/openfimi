@@ -137,6 +137,7 @@ class SimAircraft:
         with self._lock:
             if self.phase == 2 and time.monotonic() - self.sticks_at < 0.6:
                 r, p, t, y = ((v - 512) / 512 for v in self.sticks)
+                p, t = -p, -t  # the RC encodes forward and up as low values
                 self.yaw = (self.yaw + y * 60 * dt + 180) % 360 - 180
                 fwd, right = p * 8 * dt, r * 8 * dt
                 h = math.radians(self.yaw)

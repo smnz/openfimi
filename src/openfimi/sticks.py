@@ -6,8 +6,10 @@ If the caller stops updating for ``deadman`` seconds the sticks re-centre, so a
 crashed controller (or a stalled AI loop) leaves the aircraft hovering rather
 than holding the last command.
 
-The sign conventions are UNCONFIRMED: verify each axis on the ground with the
-propellers removed before flying.
+Inputs: +roll = right, +pitch = forward, +throttle = up, +yaw = clockwise.  The
+mapping to wire values was measured from a real RC; whether the aircraft obeys
+virtual sticks alongside the physical RC is not yet confirmed, so test with
+the propellers removed before flying.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import time
 from dataclasses import dataclass
 
 from . import commands
-from .commands import STICK_CENTRE, STICK_MAX
+from .commands import STICK_CENTRE, STICK_MAX, STICK_MIN
 
 
 @dataclass
@@ -28,11 +30,17 @@ class Sticks:
     yaw: float = 0.0
 
     def raw(self) -> tuple[int, int, int, int]:
-        def conv(v: float) -> int:
-            v = max(-1.0, min(1.0, v))
-            return int(round(STICK_CENTRE + v * (STICK_MAX - STICK_CENTRE)))
+        """Wire values. Inputs are intuitive (+ = right, forward, up, clockwise);
+        the RC encodes forward and up as LOW values, so those two are inverted."""
 
-        return conv(self.roll), conv(self.pitch), conv(self.throttle), conv(self.yaw)
+        def conv(v: float, invert: bool = False) -> int:
+            v = max(-1.0, min(1.0, v))
+            if invert:
+                v = -v
+            span = (STICK_MAX - STICK_CENTRE) if v > 0 else (STICK_CENTRE - STICK_MIN)
+            return int(round(STICK_CENTRE + v * span))
+
+        return (conv(self.roll), conv(self.pitch, True), conv(self.throttle, True), conv(self.yaw))
 
 
 class StickStreamer:

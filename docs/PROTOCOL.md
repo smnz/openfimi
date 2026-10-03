@@ -103,7 +103,7 @@ Payloads, exact bytes and the full catalogue are in chapter 02.
 | Limits | FC 4/5 | index 3 speed, 5 height, 7 distance; f32 |
 | RTH altitude | FC 4/8 | f32 |
 | **Gimbal pitch (realtime)** | GIMBAL 9/6 | 17 bytes; pitch i16 deg×100 at 13, rate i16 at 7 |
-| Virtual sticks | FC 11/2, src RC, no ACK | roll, pitch, throttle, yaw; 0..1024, centre 512; 5 Hz |
+| Virtual sticks | FC 11/2, src RC, no ACK | same frame the RC streams (see §4a); app sends at 5 Hz |
 | Photo / record | CAMERA 2/4, 2/2, 2/3 | |
 | FPV stream config | CAMERA 2/114 | `(1, 1280, 720)`, sent on connect |
 | Camera clock | CAMERA 2/135 | sent on connect |
@@ -125,6 +125,31 @@ exists. Only the cancels above and the RC's own controls are available.
 | `NavigationState` | FC 3/1 | task mode, nav state, autopilot status, waypoint index |
 | `GimbalState` | GIMBAL 9/1 | roll, pitch, yaw i16 (scale unknown) |
 | `CameraState` | CAMERA 2/21 | mode, record time, SD space |
+
+## 4a. The RC's own frames (verified on hardware)
+
+Captured from an RCX6E (firmware `V020SP11B160602R105`) through the Android
+bridge with the aircraft off. Both CRCs verify on every frame.
+
+| Message | Key | Rate | Content |
+|---|---|---|---|
+| Sticks | RC 11/2 | ~8.3 Hz | six i16 channels then a u16 key word |
+| Heartbeat | RC 11/1 | 1 Hz | u16 ≈ battery centivolts (397→393), u8 ≈ battery % (98→96), 5 more bytes |
+| State | RC 11/4 | 1 Hz | state, error (both 0) |
+| Relay | REPEATER_RC 14/4 | ~1.2 Hz | 4 zero bytes with no aircraft |
+
+Stick channels: 0..1023, 512 centred. In mode 2: ch1 roll (right stick
+horizontal, left = 0), **ch2 pitch (right stick vertical, forward/up = 0)**,
+**ch3 throttle (left stick vertical, up = 0)**, ch4 yaw (left stick
+horizontal, left = 0), ch5 unused (512), ch6 gimbal wheel. In the key word,
+idle `…3C`: bit 1 set while return-home is held, bits 2 (video) and 3 (photo)
+clear while pressed. The upper ten bits vary continuously and are not
+understood. The app's virtual-stick frame reuses this layout with key word
+`0x1F1E` (the app's default `rockerKeyMessage`), **which has the RTH bit
+set**, so openfimi sends the RC's idle value `0x003C` instead.
+
+The app relays the RC stick frame to the FC (with dst rewritten to FC) when
+it is using the 4G link. That explains why its virtual sticks use src = RC.
 
 ## 5. Video
 
@@ -197,8 +222,8 @@ Flight-tested behaviour of the stock firmware with routes uploaded by the app:
   and time remaining.
 * `flightPhase` codes 3 and 4; `FcErrCode` bits; `NavigationState` values;
   result codes beyond 0.
-* Virtual-stick axis signs, and whether the FC needs a mode switch to accept
-  them.
+* Whether the FC obeys virtual-stick frames while the physical RC is also
+  sending sticks over the radio, and whether it needs a mode switch first.
 * Whether video flows without the 2/114 command, the frame rate, and the split
   between the two UDP ports.
 

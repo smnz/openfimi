@@ -227,20 +227,39 @@ def sync_time(now: _dt.datetime | None = None) -> Command:
 # Virtual sticks
 # ---------------------------------------------------------------------------
 
-STICK_MIN, STICK_CENTRE, STICK_MAX = 0, 512, 1024
+STICK_MIN, STICK_CENTRE, STICK_MAX = 0, 512, 1023
+
+#: Key word of an idle RC as captured from a real RCX6E (bits 2..5 set).  The
+#: app's own virtual-stick frame uses 0x1F1E instead, but on the real RC bit 1
+#: of this word is the return-home button, and 0x1F1E has it set.
+RC_KEYS_IDLE = 0x003C
 
 
-def virtual_sticks(roll: int, pitch: int, throttle: int, yaw: int) -> Command:
-    """Virtual-stick frame (FC 11/2), as sent by the app's on-screen sticks.
+def virtual_sticks(
+    roll: int, pitch: int, throttle: int, yaw: int, *, wheel: int = 512, keys: int = RC_KEYS_IDLE
+) -> Command:
+    """Stick frame (11/2) addressed to the FC with the RC as source, no ack.
 
-    Channels are raw values 0..1024 with 512 centred, in wire order roll,
-    pitch, throttle, yaw (the app re-maps its two on-screen sticks into this
-    order for every stick mode).  The app streams it every 200 ms, no ack,
-    with the *RC* as source module.  Direction signs are UNCONFIRMED; test
-    on the ground with props off first.  See :mod:`openfimi.sticks`.
+    This is the same frame the RC streams to the app with its own stick
+    positions (``telemetry.RcSticks``): six channels 0..1023 (512 centred) and a
+    key word.  Channel order and directions measured on a real RCX6E in mode 2:
+
+    ========  =================  =================  ====================
+    channel   stick              0                  1023
+    ========  =================  =================  ====================
+    roll      right, horizontal  left               right
+    pitch     right, vertical    **forward (up)**   back (down)
+    throttle  left, vertical     **up**             down
+    yaw       left, horizontal   left               right
+    ========  =================  =================  ====================
+
+    The fifth channel is unused (always 512); the sixth is the gimbal wheel.
+    Whether the aircraft obeys these frames while the physical RC is also
+    sending its sticks is UNCONFIRMED: test with the propellers removed.
     """
     vals = [max(STICK_MIN, min(STICK_MAX, int(v))) for v in (roll, pitch, throttle, yaw)]
-    p = bytes((11, 2, 0, 0)) + struct.pack("<4h", *vals) + bytes((0, 2, 0, 2, 30, 31))
+    p = bytes((11, 2, 0, 0)) + struct.pack("<4h", *vals)
+    p += struct.pack("<hhH", 512, max(STICK_MIN, min(STICK_MAX, int(wheel))), keys & 0xFFFF)
     return Command(Module.FC, p, ack=False, src=Module.RC, name="virtual_sticks")
 
 

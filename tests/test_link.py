@@ -101,7 +101,7 @@ def test_sticks_deadman(rig):
     s.deadman = 0.3
     s.set(throttle=1.0)
     time.sleep(0.15)
-    assert rig.sim.sticks[2] == 1024
+    assert rig.sim.sticks[2] == 0  # throttle up reads low on the RC
     time.sleep(0.6)  # no updates: the streamer must re-centre
     assert rig.sim.sticks[2] == 512
     s.stop()

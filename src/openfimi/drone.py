@@ -48,6 +48,8 @@ class DroneState:
     navigation: telemetry.NavigationState | None = None
     gimbal: telemetry.GimbalState | None = None
     camera: telemetry.CameraState | None = None
+    rc_sticks: telemetry.RcSticks | None = None
+    rc_heart: telemetry.RcHeart | None = None
     updated: dict[str, float] = field(default_factory=dict)
 
     _FIELDS = {
@@ -60,6 +62,8 @@ class DroneState:
         telemetry.NavigationState: "navigation",
         telemetry.GimbalState: "gimbal",
         telemetry.CameraState: "camera",
+        telemetry.RcSticks: "rc_sticks",
+        telemetry.RcHeart: "rc_heart",
     }
 
     def apply(self, msg: object) -> None:
@@ -101,6 +105,8 @@ class DroneState:
             out.update(battery_pct=self.battery.percent, volts=self.battery.voltage)
         if self.signal:
             out.update(sats=self.signal.satellites, rc_signal=self.signal.rc_signal)
+        if self.rc_heart:
+            out.update(rc_battery_pct=self.rc_heart.percent)
         if self.navigation:
             n = self.navigation
             out.update(task=n.task_mode, nav=n.navi_task_state, ap=n.ap_status, wp=n.waypoint)

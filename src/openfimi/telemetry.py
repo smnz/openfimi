@@ -331,6 +331,64 @@ class FpvInfo(_Msg):
 
 
 @dataclass
+class RcSticks(_Msg):
+    """The RC's own stick, wheel and button state (RC 11/2, about 8 Hz).
+
+    Measured on an RCX6E (mode 2): channels are 0..1023, 512 centred; forward
+    and up read LOW.  ``keys`` low bits: bit 1 = return-home (set while
+    pressed), bit 2 = video and bit 3 = photo (cleared while pressed).  The
+    upper bits of ``keys`` vary continuously and are not understood.
+    """
+
+    KEY = (Module.RC, 11, 2)
+    roll: int
+    pitch: int
+    throttle: int
+    yaw: int
+    aux: int
+    wheel: int  # gimbal tilt wheel
+    keys: int
+
+    @property
+    def rth_pressed(self) -> bool:
+        return bool(self.keys & 0x02)
+
+    @property
+    def video_pressed(self) -> bool:
+        return not self.keys & 0x04
+
+    @property
+    def photo_pressed(self) -> bool:
+        return not self.keys & 0x08
+
+    @classmethod
+    def decode(cls, b: bytes) -> RcSticks:
+        _need(b, 14, "RcSticks")
+        return cls(*struct.unpack_from("<6hH", b, 0))
+
+
+@dataclass
+class RcHeart(_Msg):
+    """RC heartbeat (RC 11/1, 1 Hz).  The app reads only the first four bytes.
+
+    On a real RCX6E the first field fell 397 -> 394 and the second 98 -> 97 over
+    a few minutes on battery, so they look like RC battery centivolts and
+    percent (UNCONFIRMED).
+    """
+
+    KEY = (Module.RC, 11, 1)
+    voltage_raw: int
+    percent: int
+    flags: int
+    rest: bytes
+
+    @classmethod
+    def decode(cls, b: bytes) -> RcHeart:
+        _need(b, 4, "RcHeart")
+        return cls(struct.unpack_from("<H", b, 0)[0], b[2], b[3], bytes(b[4:]))
+
+
+@dataclass
 class RcState(_Msg):
     KEY = (Module.RC, 11, 4)
     state: int
@@ -388,6 +446,8 @@ DECODERS: dict[tuple[int, int, int], Callable[[bytes], _Msg]] = {
         CameraState,
         FpvInfo,
         RcState,
+        RcSticks,
+        RcHeart,
         RelayHeart,
     )
 }

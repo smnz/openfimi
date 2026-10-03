@@ -94,11 +94,40 @@ def test_gimbal_pitch_layout():
 
 
 def test_virtual_sticks():
-    c = commands.virtual_sticks(512, 600, 1024, 0)
+    c = commands.virtual_sticks(512, 600, 1023, 0)
     assert c.src == Module.RC and not c.ack and c.header_flags == 0
-    assert c.payload == bytes([11, 2, 0, 0]) + struct.pack("<4h", 512, 600, 1024, 0) + bytes(
-        [0, 2, 0, 2, 30, 31]
+    assert c.payload == bytes([11, 2, 0, 0]) + struct.pack(
+        "<6hH", 512, 600, 1023, 0, 512, 512, 0x3C
     )
+
+
+def test_stick_directions_match_real_rc():
+    from openfimi.sticks import Sticks
+
+    # Measured on an RCX6E: forward/up read low, right reads high.
+    assert Sticks(pitch=1.0).raw()[1] == 0
+    assert Sticks(throttle=1.0).raw()[2] == 0
+    assert Sticks(roll=1.0).raw()[0] == 1023
+    assert Sticks(yaw=-1.0).raw()[3] == 0
+    assert Sticks().raw() == (512, 512, 512, 512)
+
+
+def test_real_rc_stick_frame_decodes():
+    from openfimi import telemetry
+    from openfimi.framing import InnerDecoder, OuterDecoder
+
+    # Captured from an RCX6E through the Android bridge: idle sticks, then photo pressed.
+    wire = bytes.fromhex(
+        "ae71020021fe8408000d070000d30d2dedb0d5424b0b020000000200020002000200020002bc67"
+    )
+    ((stype, body),) = OuterDecoder().feed(wire)
+    (frame,) = InnerDecoder().feed(body)
+    m = telemetry.decode(frame)
+    assert isinstance(m, telemetry.RcSticks)
+    assert (m.roll, m.pitch, m.throttle, m.yaw, m.wheel) == (512,) * 5
+    assert not (m.rth_pressed or m.photo_pressed or m.video_pressed)
+    photo = telemetry.RcSticks.decode(bytes(4 + 12)[4:] + bytes((0x34, 0x00)))
+    assert photo.photo_pressed and not photo.video_pressed
 
 
 def test_flags():
