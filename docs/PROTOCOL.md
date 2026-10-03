@@ -151,6 +151,31 @@ set**, so openfimi sends the RC's idle value `0x003C` instead.
 The app relays the RC stick frame to the FC (with dst rewritten to FC) when
 it is using the 4G link. That explains why its virtual sticks use src = RC.
 
+## 4b. Aircraft on the bench (verified on hardware, indoors, no GPS)
+
+| Message | Rate | Observed |
+|---|---|---|
+| FC 12/1 heartbeat | 5 Hz | phase 1 on the ground; take-off caps 0 without GPS; byte 2-3 = seconds since power-on |
+| FC 12/2 sport state | 5 Hz | lat/lon 0 with no fix; roll/pitch/yaw ×0.1° confirmed plausible (yaw −28.0°) |
+| FC 12/3 signal | 1 Hz | 0 satellites; the three accuracy bytes read 250 with no fix; RC signal 99 % |
+| FC 12/4 error codes | 1 Hz | `00000000 01000000 00200600 00000000` with no GPS |
+| FC 12/5 battery | 0.5 Hz | 2 cells at 4.36 V, 2250/2258 mAh, 25.2 °C, 100 %; current field −584 (likely mA) |
+| FC 12/6 home | 0.5 Hz | zeros, accuracy byte 250 (no fix) |
+| GIMBAL 9/1 | 5 Hz | **angles in 0.01°** (yaw −28.98° against the FC's −28.0°) |
+| CAMERA 2/21 | 2 Hz | camera state |
+| CAMERA 2/135 | 0.5 Hz | the camera asking for the clock; the app answers with its own 2/135 |
+| REPEATER_VEHICLE 14/4, 14/42; NFZ 17/3 | 1-2 Hz | not yet decoded |
+
+**Gimbal 9/6 verified**: −45° reached −44.88°, −90° reached −89.88° and 0°
+reached −0.11°, each in under 0.6 s at rate 20000. At rate 1000 the gimbal
+creeps and stops after about a second, which is how the app's hold-to-move
+works (it resends every 0.3 s). The camera ACKs 2/114 (FPV config) by echoing
+its arguments.
+
+**Video verified**: TYPE-2 records arrive at about 50/s **without** sending
+2/114. Reassembled, they give clean HEVC Main 1280×720 at about 21 fps, with
+VPS/SPS/PPS/SEI and an IDR roughly every 1.2 s, at about **0.4 Mbit/s**.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte
@@ -218,14 +243,13 @@ Flight-tested behaviour of the stock firmware with routes uploaded by the app:
 
 * The purpose of the initial `0x00` byte, and whether the RC needs the AOA
   handshake or accepts a device that is already `18d1:2d00`.
-* Scales: SportState ground and vertical speed, gimbal angles, battery current
-  and time remaining.
+* Scales: SportState ground and vertical speed (needs flight), battery current
+  (likely mA) and time remaining.
 * `flightPhase` codes 3 and 4; `FcErrCode` bits; `NavigationState` values;
   result codes beyond 0.
 * Whether the FC obeys virtual-stick frames while the physical RC is also
   sending sticks over the radio, and whether it needs a mode switch first.
-* Whether video flows without the 2/114 command, the frame rate, and the split
-  between the two UDP ports.
+* The split between the two UDP ports on the Wi-Fi link.
 
 `openfimi monitor --record` and `openfimi decode` exist to make those captures
 easy to take and share.

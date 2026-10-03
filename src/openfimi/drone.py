@@ -247,7 +247,7 @@ class Drone:
         return self.send(commands.mission_stop(), **kw)
 
     # -- gimbal / camera ------------------------------------------------------------
-    def gimbal_pitch(self, degrees: float, rate: int = 1000, **kw) -> Reply | None:
+    def gimbal_pitch(self, degrees: float, rate: int = 20000, **kw) -> Reply | None:
         return self.send(commands.gimbal_pitch(degrees, rate), **kw)
 
     def take_photo(self, **kw) -> Reply | None:

@@ -274,7 +274,7 @@ class AiLinePoint(_Msg):
 
 @dataclass
 class GimbalState(_Msg):
-    """Gimbal attitude (GIMBAL 9/1). Angle scale UNCERTAIN (0.1 or 0.01 deg)."""
+    """Gimbal attitude (GIMBAL 9/1, 5 Hz). Angles in 0.01 degree (verified)."""
 
     KEY = (Module.GIMBAL, 9, 1)
     error_code: int
@@ -282,6 +282,18 @@ class GimbalState(_Msg):
     roll_raw: int
     pitch_raw: int
     yaw_raw: int
+
+    @property
+    def pitch_deg(self) -> float:
+        return self.pitch_raw / 100
+
+    @property
+    def roll_deg(self) -> float:
+        return self.roll_raw / 100
+
+    @property
+    def yaw_deg(self) -> float:
+        return self.yaw_raw / 100
 
     @classmethod
     def decode(cls, b: bytes) -> GimbalState:

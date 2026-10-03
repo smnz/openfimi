@@ -268,12 +268,14 @@ def virtual_sticks(
 # ---------------------------------------------------------------------------
 
 
-def gimbal_pitch(degrees: float, rate: int = 1000) -> Command:
-    """Realtime gimbal tilt (GIMBAL 9/6). 0 = level, -90 = straight down.
+def gimbal_pitch(degrees: float, rate: int = 20000) -> Command:
+    """Realtime gimbal tilt (GIMBAL 9/6). 0 = level, -90 = straight down, +10 up.
 
-    Pitch goes on the wire as centidegrees (UNCONFIRMED but consistent with the
-    app's ruler and the waypoint field).  ``rate`` is the slew value the app
-    uses: 1000 for a tap/step, 20000 for hold-to-limit.
+    Verified on hardware: the target is centidegrees and is reached within
+    about 0.1 degrees.  ``rate`` is a slew speed: at the app's 20000 the gimbal
+    goes from 0 to -45 in under 0.6 s; at 1000 it creeps and gives up after
+    about a second, which the app uses for hold-to-move by resending every
+    0.3 s.  The gimbal's reported pitch is in ``GimbalState.pitch_raw`` (0.01 deg).
     """
     p = bytearray(17)
     p[0:5] = bytes((9, 6, 0, 0, 10))
