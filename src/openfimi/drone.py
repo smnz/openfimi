@@ -23,6 +23,7 @@ from . import commands, telemetry
 from .commands import Command
 from .link import AckTimeout, Link, Reply
 from .mission import Mission
+from .modules import Module
 from .sticks import StickStreamer
 from .transport.base import Transport
 from .video import VideoPacket
@@ -55,6 +56,7 @@ class DroneState:
     camera: telemetry.CameraState | None = None
     rc_sticks: telemetry.RcSticks | None = None
     rc_heart: telemetry.RcHeart | None = None
+    notice: dict | None = None  # the latest bridge notice (e.g. its emergency RTH button)
     updated: dict[str, float] = field(default_factory=dict)
 
     _FIELDS = {
@@ -132,6 +134,9 @@ class Drone:
         self._telemetry_seen = threading.Event()
         self._sticks: StickStreamer | None = None
         self.link.on_message(self._on_message)
+        self.link.on_notice(self._on_notice)
+        self.link.on_frame(self._on_frame)
+        self._clock_sent = 0.0
 
     # -- lifecycle -----------------------------------------------------------
     def connect(self) -> Drone:
@@ -157,6 +162,30 @@ class Drone:
         self.state.apply(msg)
         if self.state.heart is not None and self.state.sport is not None:
             self._telemetry_seen.set()
+
+    def _on_frame(self, frame) -> None:
+        # The camera asks for the time (CAMERA 2/135, every 2 s) until it gets
+        # an answer, and keeps what it is given until powered off.  Unanswered,
+        # it stamps media with GPS time, i.e. UTC.  The on-connect clock misses a
+        # camera switched on after connecting (hands-off launch), so answer
+        # every request as the app does.
+        if (
+            self.init_camera
+            and frame.src == Module.CAMERA
+            and frame.dst == Module.GCS
+            and frame.group == 2
+            and frame.msg_id == 135
+            and time.monotonic() - self._clock_sent > 1.0
+        ):
+            self._clock_sent = time.monotonic()
+            self.link.send(commands.set_camera_clock())
+
+    def _on_notice(self, notice: dict) -> None:
+        self.state.notice = notice
+        self.state.updated["notice"] = time.monotonic()
+        if notice.get("event") == "emergency_rth" and self._sticks is not None:
+            # The bridge has commanded return home: stop fighting it with sticks.
+            self._sticks.stop()
 
     def wait_for_telemetry(self, timeout: float = 10.0) -> bool:
         """Block until FC telemetry (heartbeat and position) is flowing."""
@@ -201,6 +230,41 @@ class Drone:
 
     def return_home(self, **kw) -> Reply | None:
         return self.send(commands.return_home(), **kw)
+
+    def emergency_rth(self, on_event: Callable[[str], None] | None = None) -> bool:
+        """Abandon whatever the aircraft is doing and return home, then land.
+
+        Stops virtual sticks (centred), exits a running route (3/35) or fly-to
+        (3/51), then sends return home (3/26) until it is accepted, up to three
+        times.  Returns True once accepted.  The bridge app's emergency button
+        sends the same commands.  If the aircraft is on the ground there is
+        nothing to do and the command is refused.
+        """
+        say = on_event or (lambda msg: log.info(msg))
+        if self._sticks is not None:
+            self._sticks.stop()
+        nav = self.state.navigation
+        task = nav.task_mode if nav else None
+        exits = ((commands.mission_stop(), (1, None)), (commands.fly_to_exit(), (2, None)))
+        for cmd, modes in exits:  # task None: state unknown, send both
+            if task in modes:
+                try:
+                    r = self.send(cmd, timeout=1.5)
+                    say(f"{cmd.name}: {'ok' if r is None or r.ok else f'code {r.code}'}")
+                except AckTimeout:
+                    say(f"{cmd.name}: no reply")
+        for _ in range(3):
+            try:
+                r = self.send(commands.return_home(), timeout=1.5)
+            except AckTimeout:
+                say("return home: no reply")
+                continue
+            if r is None or r.ok:
+                say("return home accepted")
+                return True
+            say(f"return home refused (code {r.code})")
+            time.sleep(0.3)
+        return False
 
     def cancel_takeoff(self, **kw) -> Reply | None:
         return self.send(commands.cancel_takeoff(), **kw)
@@ -293,6 +357,7 @@ class Drone:
         settle_s: float = 5.0,
         level_deg: float = 8.0,
         on_event: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> None:
         """Wait until the pre-flight checks pass and the aircraft has settled.
 
@@ -307,12 +372,16 @@ class Drone:
         (GPS ground speed < 0.3 m/s).  Being carried breaks all of these, so a
         drone switched on while walking to the launch spot is not launched
         until it has been put down.
+
+        Setting ``cancel`` stops the wait with PreflightError("cancelled").
         """
         say = on_event or (lambda msg: log.info(msg))
         end = time.monotonic() + timeout
         last = None
         samples: deque = deque()
         while True:
+            if cancel is not None and cancel.is_set():
+                raise PreflightError("cancelled")
             problems = self._preflight(min_battery, min_satellites)
             sp = self.state.sport
             if settle_s > 0 and sp is not None:
@@ -383,6 +452,8 @@ class Drone:
         wait: bool = True,
         timeout: float = 1800.0,
         on_event: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
+        stop_at_end: bool = False,
     ) -> dict:
         """Fly a route end to end, the way the flight tests did it.
 
@@ -396,6 +467,20 @@ class Drone:
         ``follow_gimbal`` drives the per-waypoint gimbal pitch the aircraft
         itself ignores (see :mod:`openfimi.follow`); by default it is on when any
         waypoint has a gimbal mode other than NONE.
+
+        Setting ``cancel`` before take-off (while waiting for the aircraft or for
+        it to be ready) abandons the launch with PreflightError("cancelled").
+        After take-off but before the route starts it stops the route from being
+        started (RuntimeError("cancelled")) and leaves the aircraft hovering for
+        the caller, e.g. after :meth:`emergency_rth`; during the route it only
+        stops the monitoring and the gimbal follower.
+
+        ``stop_at_end`` returns as soon as the route itself ends, without
+        waiting for its finish action (a return home, say), so a caller can
+        chain the next route: ``fly_route(next, takeoff=False)`` uploads it in
+        the air.  The result's ``completed`` says whether the route really ran
+        to its last waypoint; it is False if it was cut short (pilot, RC
+        return home, signal loss), when nothing should be chained.
         """
         from .follow import GimbalFollower, ground_distance
 
@@ -414,8 +499,13 @@ class Drone:
         if wait_ready > 0 and (s.heart is None or s.sport is None):
             # The aircraft may not even be switched on yet: wait for it.
             say("waiting for the aircraft to power on")
-            if not self.wait_until(lambda st: st.heart and st.sport, wait_ready):
+            if not self.wait_until(
+                lambda st: (cancel is not None and cancel.is_set()) or (st.heart and st.sport),
+                wait_ready,
+            ):
                 raise PreflightError(f"no aircraft telemetry after {wait_ready:.0f} s")
+            if cancel is not None and cancel.is_set():
+                raise PreflightError("cancelled")
             say("aircraft telemetry received")
         if s.heart is None or s.sport is None:
             raise PreflightError("no telemetry")
@@ -424,8 +514,14 @@ class Drone:
                 raise PreflightError("aircraft is on the ground and takeoff=False")
             if wait_ready > 0:
                 self.wait_until_ready(
-                    wait_ready, min_satellites=min_satellites, settle_s=settle_s, on_event=say
+                    wait_ready,
+                    min_satellites=min_satellites,
+                    settle_s=settle_s,
+                    on_event=say,
+                    cancel=cancel,
                 )
+            if cancel is not None and cancel.is_set():
+                raise PreflightError("cancelled")
             problems = self.preflight(min_satellites=min_satellites)
             if problems:
                 raise PreflightError("; ".join(problems))
@@ -438,6 +534,13 @@ class Drone:
                 lambda st: st.heart.flight_phase == 3 and st.sport.height_m > 2, 30
             ):
                 bail("did not reach a hover")
+
+        def check_cancel():
+            if cancel is not None and cancel.is_set():
+                say("cancelled in the air: route not started")
+                raise RuntimeError("cancelled")
+
+        check_cancel()
         try:
             self.upload_mission(
                 mission,
@@ -457,6 +560,7 @@ class Drone:
         if len(pts) != len(mission.waypoints) or bad:
             bail(f"read-back mismatch at waypoints {bad or 'count'}")
         say(f"route verified ({len(pts)} waypoints)")
+        check_cancel()
 
         follow = (
             follow_gimbal
@@ -486,6 +590,9 @@ class Drone:
         try:
             while time.monotonic() < end:
                 time.sleep(0.5)
+                if cancel is not None and cancel.is_set():
+                    say("cancelled: no longer following the route")
+                    break
                 st = self.state
                 nav = st.navigation
                 if nav and nav.task_mode == 1:
@@ -495,9 +602,21 @@ class Drone:
                         if last_wp > 0:
                             say(f"reached waypoint {last_wp - 1}")
                 elif seen_route and nav and nav.task_mode != 1:
-                    if last_wp < len(mission.waypoints):
-                        last_wp = len(mission.waypoints)
-                        say(f"reached waypoint {last_wp - 1} (route complete)")
+                    n = len(mission.waypoints)
+                    if "completed" not in result:
+                        last = mission.waypoints[-1]
+                        near = ground_distance((st.sport.lat, st.sport.lon), (last.lat, last.lon))
+                        # apStatus 5 = the route's own finish (a commanded RTH reads 2)
+                        at_last = last_wp >= n - 1 and near < 15
+                        done = last_wp >= n or nav.ap_status == 5 or at_last
+                        result["completed"] = done
+                        if done and last_wp < n:
+                            say(f"reached waypoint {n - 1} (route complete)")
+                        elif not done:
+                            say(f"route left after {max(last_wp, 0)}/{n} waypoints (interrupted)")
+                        last_wp = n
+                    if stop_at_end:
+                        break
                     if int(mission.finish) != 4:
                         say("route finished")
                         break

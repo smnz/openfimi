@@ -7,7 +7,8 @@ On the RC (AOA) and Wi-Fi links every message is wrapped twice::
                                                        inner "FmLink4"
 
 The outer TYPE selects the stream: 0 = commands/telemetry (an FmLink4 frame
-follows), 2 = live video (RTP), 6/7 = firmware/media, 11 = 4G video.  There is
+follows), 2 = live video (RTP), 6/7 = firmware/media, 11 = 4G video, and
+0x40 = an openfimi bridge notice (ours, never sent by FIMI hardware).  There is
 no byte stuffing; both layers resynchronise by scanning for their start byte
 and validating length and checksum.
 """
@@ -38,6 +39,7 @@ class StreamType(IntEnum):
     FW_UPLOAD = 6
     MEDIA = 7
     VIDEO_4G = 11
+    BRIDGE_NOTICE = 0x40  # openfimi's own: a bridge tells its clients something (JSON)
 
 
 @dataclass
@@ -142,6 +144,13 @@ def encode_outer(inner: bytes, stream: int = StreamType.FMLINK) -> bytes:
     b2 = (total >> 4) & 0xFF
     head = bytes((OUTER_SYNC, b1, b2, stream & 0xFF))
     return head + bytes((additive8(head),)) + bytes(inner)
+
+
+def encode_bridge_notice(event: dict) -> bytes:
+    """A bridge notice record: UTF-8 JSON in an outer wrapper of type 0x40."""
+    import json
+
+    return encode_outer(json.dumps(event, separators=(",", ":")).encode(), StreamType.BRIDGE_NOTICE)
 
 
 def encode_wire(frame: Frame, stream: int = StreamType.FMLINK) -> bytes:

@@ -1,8 +1,12 @@
 package io.github.smnz.openfimi.bridge
 
 import android.hardware.usb.UsbAccessory
+import android.util.Log
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** Shared state between the service and the UI (single process, so a plain object). */
 object BridgeState {
@@ -19,12 +23,30 @@ object BridgeState {
     /** Set when the user stops the bridge, so reopening the app does not reconnect. */
     @Volatile var userStopped = false
 
+    /** Outcome of the last emergency return-to-home ("" if never pressed). */
+    @Volatile var emergency: String = ""
+
+    private val events = ArrayDeque<String>()
+
+    /** Adds a timestamped line to the event log shown in the app (and logcat). */
+    fun log(msg: String) {
+        Log.i(BridgeService.TAG, msg)
+        val t = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        synchronized(events) {
+            events.addLast("$t $msg")
+            while (events.size > 30) events.removeFirst()
+        }
+    }
+
+    fun recentEvents(n: Int = 8): List<String> = synchronized(events) { events.toList().takeLast(n) }
+
     fun reset(acc: UsbAccessory) {
         connected = true
         accessory = listOfNotNull(acc.manufacturer, acc.model, acc.version).joinToString(" · ")
         rxBytes = 0
         txBytes = 0
         dropped = 0
+        emergency = ""
     }
 
     /** IPv4 addresses a client could reach (Wi-Fi, hotspot), most useful first. */

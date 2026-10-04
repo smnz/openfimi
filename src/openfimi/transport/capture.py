@@ -28,6 +28,8 @@ class CaptureWriter:
 
     def record(self, direction: int, data: bytes) -> None:
         with self._lock:
+            if self.fp.closed:
+                return  # stopped while this chunk was in flight
             self.fp.write(_REC.pack(direction, time.time(), len(data)) + data)
             self.fp.flush()
 
@@ -44,24 +46,49 @@ def read_capture(fp: BinaryIO) -> Iterator[tuple[int, float, bytes]]:
 
 
 class RecordingTransport(Transport):
-    """Wraps another transport and records both directions to a capture file."""
+    """Wraps another transport and records both directions to a capture file.
 
-    def __init__(self, inner: Transport, fp: BinaryIO) -> None:
+    With ``fp`` it records from the start.  Without, it passes bytes through
+    until :meth:`start`; :meth:`start` / :meth:`stop` switch recording on and off
+    mid-session (each start begins a new capture file).
+    """
+
+    def __init__(self, inner: Transport, fp: BinaryIO | None = None) -> None:
         self.inner = inner
-        self.writer = CaptureWriter(fp)
+        self.writer: CaptureWriter | None = CaptureWriter(fp) if fp is not None else None
         self.name = f"{inner.name} (recording)"
+
+    @property
+    def recording(self) -> bool:
+        return self.writer is not None
+
+    def start(self, fp: BinaryIO) -> None:
+        """Record from now on into ``fp`` (closing any previous capture)."""
+        old, self.writer = self.writer, CaptureWriter(fp)
+        if old is not None:
+            old.fp.close()
+
+    def stop(self) -> None:
+        """Stop recording and close the capture file."""
+        old, self.writer = self.writer, None
+        if old is not None:
+            with old._lock:
+                old.fp.close()
 
     def open(self) -> None:
         self.inner.open()
 
     def read(self, timeout: float | None = None) -> bytes:
         data = self.inner.read(timeout)
-        if data:
-            self.writer.record(RX, data)
+        w = self.writer
+        if data and w is not None:
+            w.record(RX, data)
         return data
 
     def write(self, data: bytes) -> None:
-        self.writer.record(TX, data)
+        w = self.writer
+        if w is not None:
+            w.record(TX, data)
         self.inner.write(data)
 
     def close(self) -> None:

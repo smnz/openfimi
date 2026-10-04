@@ -216,5 +216,182 @@ def test_wait_until_ready_requires_settled_on_ground(rig):
     threading.Thread(target=put_down, daemon=True).start()
     t0 = time.monotonic()
     d.wait_until_ready(10, settle_s=1.0, on_event=events.append)
-    assert time.monotonic() - t0 >= 1.4  # 0.5 s carried + 1 s settling
+    assert time.monotonic() - t0 >= 1.1  # 0.5 s carried + settling (1 s, 0.3 s tolerance)
     assert events[-1].endswith("settled"), events
+
+
+def test_wait_until_ready_can_be_cancelled(rig):
+    from openfimi.drone import PreflightError
+
+    rig.sim.satellites = 4  # never ready
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    cancel = threading.Event()
+    threading.Timer(0.5, cancel.set).start()
+    t0 = time.monotonic()
+    with pytest.raises(PreflightError, match="cancelled"):
+        d.wait_until_ready(30, settle_s=0.5, cancel=cancel)
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_bridge_notice_reaches_clients_and_stops_sticks(rig):
+    from openfimi.framing import encode_bridge_notice
+
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    s = d.sticks.start()
+    s.set(pitch=0.5)
+    seen = []
+    d.link.on_notice(seen.append)
+    notice = {"event": "emergency_rth", "source": "bridge", "stage": "activated"}
+    rig.t.feed(encode_bridge_notice(notice))
+    assert d.wait_until(lambda st: st.notice, 2)
+    assert seen == [notice]
+    assert s._thread is None  # the streamer was stopped (and sent centred sticks)
+
+
+def test_emergency_rth_during_route(rig):
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    lat0, lon0 = rig.sim.home
+    m = Mission([Waypoint(lat0 + 0.002, lon0, 20), Waypoint(lat0 + 0.002, lon0 + 0.002, 20)])
+    d.upload_mission(m)
+    d.takeoff()
+    d.wait_until(lambda s: s.sport and s.sport.height_m > 1.0, 5)
+    assert d.start_mission().ok
+    assert d.wait_until(lambda s: s.navigation and s.navigation.task_mode == 1, 5)
+    events = []
+    assert d.emergency_rth(on_event=events.append)
+    assert "mission_stop: ok" in events and events[-1] == "return home accepted", events
+    assert d.wait_until(lambda s: s.navigation.task_mode == 3, 3)
+    assert d.wait_until(lambda s: not s.heart.flying, 30)
+
+
+def test_fly_route_cancel_after_takeoff_does_not_start_route(rig):
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    d.wait_until(lambda s: s.battery and s.signal and s.errors, 3)
+    lat0, lon0 = rig.sim.home
+    cancel = threading.Event()
+    events = []
+
+    def on_event(msg):
+        events.append(msg)
+        if msg == "taking off":
+            cancel.set()
+
+    m = Mission([Waypoint(lat0 + 0.0005, lon0, 20)])
+    with pytest.raises(RuntimeError, match="cancelled"):
+        d.fly_route(m, on_event=on_event, cancel=cancel, timeout=30)
+    assert "route started" not in events and rig.sim.task_mode != 1, events
+
+
+def test_answers_camera_clock_requests():
+    # Captured: the camera asks with an empty CAMERA 2/135 every 2 s until told
+    # the time; unanswered, it stamps media in UTC.
+    import datetime as dt
+
+    t = LoopbackTransport()
+    d = Drone(t).connect()
+    try:
+        ask = encode_outer(encode_inner(Module.CAMERA, Module.GCS, 5, bytes.fromhex("02870000")))
+        t.sent.clear()
+        t.feed(ask)
+        deadline = time.monotonic() + 2
+        sent = []
+        while time.monotonic() < deadline and not sent:
+            sent = [w for w in t.sent if w[5 + 16 : 5 + 18] == bytes((2, 135))]
+            time.sleep(0.02)
+        assert sent, t.sent
+        body = sent[0][5 + 16 + 4 :]
+        sec, minute, hour, day, month = body[:5]
+        year, offset = struct.unpack_from("<Hi", body, 5)
+        now = dt.datetime.now().astimezone()
+        assert (year, month, day, hour) == (now.year, now.month, now.day, now.hour)
+        assert offset == int(now.utcoffset().total_seconds())
+    finally:
+        d.close()
+
+    passive = LoopbackTransport()  # init_camera=False (the video viewer) never answers
+    d = Drone(passive, init_camera=False).connect()
+    try:
+        passive.feed(ask)
+        time.sleep(0.3)
+        assert not passive.sent
+    finally:
+        d.close()
+
+
+def test_recording_transport_starts_and_stops_mid_session(tmp_path):
+    from openfimi.transport.capture import RecordingTransport, read_capture
+
+    inner = LoopbackTransport()
+    rec = RecordingTransport(inner)
+    rec.open()
+    inner.feed(b"before")
+    assert rec.read(0.5) == b"before" and not rec.recording
+    path = tmp_path / "part.ofcap"
+    rec.start(open(path, "wb"))
+    inner.feed(b"during")
+    rec.read(0.5)
+    rec.write(b"sent")
+    rec.stop()
+    inner.feed(b"after")
+    rec.read(0.5)
+    rec.write(b"later")
+    got = [(d, data) for d, _, data in read_capture(open(path, "rb"))]
+    assert got == [(0, b"during"), (1, b"sent")]
+    assert inner.sent == [b"sent", b"later"]
+
+
+def _two_point(lat, lon, finish):
+    from openfimi.mission import FinishAction
+
+    return Mission(
+        [Waypoint(lat, lon, 15), Waypoint(lat + 0.0003, lon, 15)],
+        speed_ms=8,
+        finish=FinishAction(finish),
+    )
+
+
+def test_fly_route_stop_at_end_then_chain_next_route(rig):
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    d.wait_until(lambda s: s.battery and s.signal and s.errors, 3)
+    lat0, lon0 = rig.sim.home
+    events = []
+    first = d.fly_route(
+        _two_point(lat0 + 0.0003, lon0, 4), on_event=events.append, stop_at_end=True, timeout=60
+    )
+    assert first["completed"] and not first.get("landed"), events
+    assert d.state.flying  # did not wait for the return home
+    if d.state.navigation.task_mode == 3:
+        assert d.send(commands.cancel_return_home()).ok
+    second = d.fly_route(
+        _two_point(lat0 + 0.0003, lon0 + 0.0004, 4), takeoff=False, on_event=events.append
+    )
+    assert second["completed"] and second.get("landed"), events
+
+
+def test_interrupted_route_is_not_completed(rig):
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    d.wait_until(lambda s: s.battery and s.signal and s.errors, 3)
+    lat0, lon0 = rig.sim.home
+    m = Mission([Waypoint(lat0 + 0.003, lon0, 15), Waypoint(lat0 + 0.006, lon0, 15)], speed_ms=8)
+    threading.Timer(4.0, lambda: d.return_home()).start()  # the pilot's RTH, mid-route
+    res = d.fly_route(m, stop_at_end=True, timeout=60)
+    assert res["completed"] is False
+
+
+def test_route_finish_and_rc_lost_go_in_every_waypoint_frame():
+    # As the FIMI app does: bytes 38/39 of each waypoint are the ROUTE's finish
+    # and RC-lost actions; per-waypoint values in the database are never used.
+    from openfimi.mission import FinishAction, LostAction, waypoint_frame
+
+    m = Mission(
+        [Waypoint(1.0, 2.0, 10), Waypoint(1.001, 2.0, 10), Waypoint(1.002, 2.0, 10)],
+        finish=FinishAction(4),
+        rc_lost=LostAction(1),
+    )
+    assert [tuple(waypoint_frame(m, i, 3).payload[38:40]) for i in range(3)] == [(4, 1)] * 3

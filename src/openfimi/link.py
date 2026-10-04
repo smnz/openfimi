@@ -9,6 +9,7 @@ unacknowledged commands (500 ms x 5, as the app does).  ACKs are matched on
 from __future__ import annotations
 
 import concurrent.futures as cf
+import json
 import logging
 import random
 import threading
@@ -81,6 +82,7 @@ FrameCallback = Callable[[Frame], None]
 MessageCallback = Callable[[object, Frame], None]
 VideoCallback = Callable[[VideoPacket], None]
 StreamCallback = Callable[[int, bytes], None]
+NoticeCallback = Callable[[dict], None]
 
 
 class Link:
@@ -100,6 +102,7 @@ class Link:
         self._msg_cbs: list[MessageCallback] = []
         self._video_cbs: list[VideoCallback] = []
         self._stream_cbs: list[StreamCallback] = []
+        self._notice_cbs: list[NoticeCallback] = []
         self._threads: list[threading.Thread] = []
         self._running = False
         self.closed = threading.Event()
@@ -150,6 +153,12 @@ class Link:
 
     def on_video(self, cb: VideoCallback) -> VideoCallback:
         self._video_cbs.append(cb)
+        return cb
+
+    def on_notice(self, cb: NoticeCallback) -> NoticeCallback:
+        """Bridge notices (outer type 0x40): cb(dict), e.g. the bridge app's
+        emergency return-home button ``{"event": "emergency_rth", "stage": ...}``."""
+        self._notice_cbs.append(cb)
         return cb
 
     def on_stream(self, cb: StreamCallback) -> StreamCallback:
@@ -236,6 +245,15 @@ class Link:
         if stype == StreamType.FMLINK:
             for frame in self._inner.feed(body):
                 self._on_frame(frame)
+        elif stype == StreamType.BRIDGE_NOTICE:
+            try:
+                notice = json.loads(body.decode())
+            except (UnicodeDecodeError, ValueError):
+                log.debug("undecodable bridge notice %r", body[:80])
+                return
+            if isinstance(notice, dict):
+                for cb in self._notice_cbs:
+                    self._safe(cb, notice)
         elif stype == StreamType.VIDEO:
             for pkt in self._video.feed(body):
                 self.stats.video_packets += 1

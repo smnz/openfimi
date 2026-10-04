@@ -25,6 +25,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true // android.util.Log in code under test
+    }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {

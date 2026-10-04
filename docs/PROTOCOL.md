@@ -163,7 +163,7 @@ it is using the 4G link. That explains why its virtual sticks use src = RC.
 | FC 12/6 home | 0.5 Hz | zeros, accuracy byte 250 (no fix) |
 | GIMBAL 9/1 | 5 Hz | **angles in 0.01°** (yaw −28.98° against the FC's −28.0°) |
 | CAMERA 2/21 | 2 Hz | camera state |
-| CAMERA 2/135 | 0.5 Hz | the camera asking for the clock; the app answers with its own 2/135 |
+| CAMERA 2/135 | 0.5 Hz | the camera asking for the clock (empty body) until it gets one; the app answers with its own 2/135 (local time + UTC offset). Captures show it asking for minutes when unanswered, and media then dated in UTC; openfimi answers every request |
 | REPEATER_VEHICLE 14/4, 14/42; NFZ 17/3 | 1-2 Hz | not yet decoded |
 
 **Gimbal 9/6 verified**: −45° reached −44.88°, −90° reached −89.88° and 0°
@@ -409,6 +409,17 @@ Flight-tested behaviour of the stock firmware with routes uploaded by the app:
 3. Optionally do what the app does on connect: set the camera clock (2/135)
    and configure FPV (2/114).
 4. Send commands and match ACKs; retransmit 500 ms × 5.
+
+## 7a. Bridge notices (openfimi's own)
+
+Outer stream TYPE **0x40** is not used by FIMI hardware; openfimi bridges use
+it to tell their TCP clients about things that happened at the bridge. The
+body is UTF-8 JSON. The Android bridge's emergency return-home button sends
+`{"event": "emergency_rth", "source": "bridge", "stage": "activated"}` when
+pressed, then `"stage"` `"accepted"`, `"refused"` (with `"code"`) or
+`"no_reply"`. A bridge inserts notices only between whole outer frames.
+`Link.on_notice` delivers them; `Drone` keeps the latest in
+`state.notice` and stops its virtual sticks on an emergency return home.
 
 ## 8. Open questions (settle them with captures)
 

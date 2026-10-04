@@ -72,6 +72,31 @@ Pi bridge (raw bytes both ways).
   `openfimi decode`. *Stop* or *Quit* releases the RC.
 * The RC powers the phone through the same cable.
 
+### Emergency return-to-home button
+
+The bridge app has a big red **EMERGENCY RETURN HOME** button, and the same
+action is on its notification. It works even if the computer has crashed or
+lost Wi-Fi, because the phone sends the commands itself:
+
+1. *mission stop* and *fly-to-exit* (leave any running route; their replies
+   are ignored), then about 300 ms later
+2. *return home* (return and land), resent every 500 ms until the flight
+   controller ACKs it, for up to 6 tries.
+
+The result shows under the button and in the app's event list:
+*accepted*, *REFUSED (code N)* or *NO REPLY*. Every connected client also gets
+a bridge notice (outer stream type `0x40`, a UTF-8 JSON body) such as
+`{"event":"emergency_rth","source":"bridge","stage":"activated"}`, followed by
+`"stage":"accepted"`, `"refused"` (with `"code"`) or `"no_reply"`. A script
+should treat the notice as an operator override and stop sending flight
+commands.
+
+To keep the stream intact, the bridge inserts its frames only at frame
+boundaries. In the RC→client direction it tracks outer frames and waits for
+the end of the current one (at most 300 ms). In the client→RC direction it
+forwards only complete frames from each client, so its own commands never land
+inside a client's frame.
+
 ## 3. Direct Wi-Fi (bench only)
 
 The aircraft runs an access point (`X8Min_...`, aircraft at `192.168.40.210`)

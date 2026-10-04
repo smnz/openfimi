@@ -125,6 +125,7 @@ d.takeoff(); d.land(); d.return_home()
 d.fly_to(lat, lon, alt_m=30, speed_ms=5)   # sets the target (3/52), then goes (3/48)
 d.gimbal_pitch(-90)                        # reached within ~0.1 deg in under 0.6 s
 d.take_photo()
+d.emergency_rth()                          # stop sticks, exit the route or fly-to, return home
 print(d.preflight())                       # [] when ready, else reasons
 ```
 

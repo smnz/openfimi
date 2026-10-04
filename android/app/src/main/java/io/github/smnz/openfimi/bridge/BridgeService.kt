@@ -26,8 +26,12 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
@@ -36,7 +40,11 @@ import java.util.concurrent.TimeUnit
  * Bytes are copied verbatim both ways: every client receives everything the RC
  * sends (telemetry and video), and anything a client sends goes to the RC.
  * Framing, sequence numbers and retransmission all live in the client
- * (the openfimi Python library), so this stays a dumb, fast pipe.
+ * (the openfimi Python library), so this stays a fast pipe. The one exception
+ * is the emergency return-to-home button: the bridge then writes its own
+ * commands to the RC and tells clients with type-0x40 notices. So that those
+ * never land inside another frame, the relay knows where frames start and
+ * end in both directions (see [OuterTracker] and [ClientFramer]).
  */
 class BridgeService : Service() {
 
@@ -45,6 +53,7 @@ class BridgeService : Service() {
         const val PORT = 10052
         const val EXTRA_ACCESSORY = "accessory"
         const val ACTION_STOP = "io.github.smnz.openfimi.bridge.STOP"
+        const val ACTION_EMERGENCY_RTH = "io.github.smnz.openfimi.bridge.EMERGENCY_RTH"
         private const val CHANNEL = "bridge"
         private const val NOTIFICATION_ID = 1
 
@@ -52,6 +61,8 @@ class BridgeService : Service() {
             context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
         }
         private const val CLIENT_QUEUE = 1024 // chunks buffered per slow client
+        private const val NOTICE_WAIT_MS = 300L // longest a notice waits for a frame boundary
+        private const val CLIENT_HOLD_MS = 250L // longest an incomplete client frame is held
     }
 
     private var pfd: ParcelFileDescriptor? = null
@@ -64,6 +75,20 @@ class BridgeService : Service() {
     private var nsd: NsdManager? = null
     private var nsdListener: NsdManager.RegistrationListener? = null
     @Volatile private var running = false
+
+    private val timer: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { Thread(it, "bridge-timer") }
+    private val emergency = EmergencyRth(timer, ::writeToRc, ::onEmergency)
+
+    // RC -> clients relay state, guarded by relayLock (the read thread holds it per chunk).
+    private val relayLock = Any()
+    private val inner = InnerDecoder()
+    private val tracker = OuterTracker({ it == Wire.TYPE_FMLINK }) { _, body ->
+        for (f in inner.feed(body)) emergency.onFrame(f)
+    }
+    private val splicer = NoticeSplicer(tracker, TimeUnit.MILLISECONDS.toNanos(NOTICE_WAIT_MS)) { part ->
+        for (c in clients) c.offer(part)
+    }
 
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -80,6 +105,15 @@ class BridgeService : Service() {
         if (intent?.action == ACTION_STOP) {
             BridgeState.userStopped = true
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_EMERGENCY_RTH) {
+            if (running) {
+                emergency.activate()
+            } else {
+                BridgeState.log("Emergency RTH pressed, but the remote is not connected")
+                stopSelf()
+            }
             return START_NOT_STICKY
         }
         startInForeground()
@@ -141,7 +175,7 @@ class BridgeService : Service() {
                 val chunk = buf.copyOf(n)
                 BridgeState.rxBytes += n
                 BridgeState.capture?.record(Capture.RX, chunk)
-                for (c in clients) c.offer(chunk)
+                synchronized(relayLock) { splicer.relay(chunk) }
             }
         } catch (e: IOException) {
             Log.i(TAG, "RC read ended: $e")
@@ -150,6 +184,32 @@ class BridgeService : Service() {
             BridgeState.status = "Remote link closed"
             stopSelf()
         }
+    }
+
+    /** Queues a bridge notice (outer type 0x40, JSON) for every client. */
+    private fun postNotice(json: String) {
+        val frame = Wire.notice(json)
+        synchronized(relayLock) { splicer.post(frame) }
+        // If the remote goes quiet or the stream never reaches a boundary, send it anyway.
+        try {
+            timer.schedule({
+                synchronized(relayLock) { splicer.flushIfStale() }
+            }, NOTICE_WAIT_MS + 50, TimeUnit.MILLISECONDS)
+        } catch (_: RejectedExecutionException) { // shutting down
+        }
+    }
+
+    private fun onEmergency(stage: String, code: Int?) {
+        val text = when (stage) {
+            "activated" -> "Emergency RTH: activated, sending return-home…"
+            "accepted" -> "Emergency RTH: accepted by the aircraft"
+            "refused" -> "Emergency RTH: REFUSED by the aircraft (code $code)"
+            "no_reply" -> "Emergency RTH: NO REPLY from the aircraft"
+            else -> "Emergency RTH: $stage"
+        }
+        BridgeState.emergency = text
+        BridgeState.log(text)
+        postNotice(EmergencyRth.json(stage, code))
     }
 
     private fun writeToRc(data: ByteArray) {
@@ -214,12 +274,23 @@ class BridgeService : Service() {
 
         private fun recvLoop() {
             val buf = ByteArray(16384)
+            // Only whole frames go to the RC, so nothing the bridge writes lands mid-frame.
+            val framer = ClientFramer()
+            val holdNs = TimeUnit.MILLISECONDS.toNanos(CLIENT_HOLD_MS)
             try {
+                sock.soTimeout = CLIENT_HOLD_MS.toInt()
                 val inp = sock.getInputStream()
                 while (running) {
-                    val n = inp.read(buf)
+                    val n = try {
+                        inp.read(buf)
+                    } catch (_: SocketTimeoutException) {
+                        0
+                    }
                     if (n < 0) break
-                    if (n > 0) writeToRc(buf.copyOf(n))
+                    if (n > 0) framer.push(buf, 0, n)?.let { writeToRc(it) }
+                    if (framer.held > 0 && System.nanoTime() - framer.heldSince > holdNs) {
+                        framer.drain()?.let { writeToRc(it) } // an incomplete frame gone stale
+                    }
                 }
             } catch (e: IOException) {
                 Log.i(TAG, "client $peer recv ended: $e")
@@ -290,6 +361,9 @@ class BridgeService : Service() {
             PendingIntent.FLAG_IMMUTABLE)
         val stop = PendingIntent.getBroadcast(this, 1,
             Intent(this, StopReceiver::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val rth = PendingIntent.getService(this, 2,
+            Intent(this, BridgeService::class.java).setAction(ACTION_EMERGENCY_RTH),
+            PendingIntent.FLAG_IMMUTABLE)
         val text = if (running) {
             "${BridgeState.addresses().firstOrNull() ?: "no network"}:$PORT · ${clients.size} client(s)"
         } else BridgeState.status
@@ -299,6 +373,7 @@ class BridgeService : Service() {
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
+            .addAction(Notification.Action.Builder(null, "Emergency RTH", rth).build())
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .build()
     }
@@ -310,6 +385,7 @@ class BridgeService : Service() {
 
     override fun onDestroy() {
         running = false
+        timer.shutdownNow()
         try {
             unregisterReceiver(detachReceiver)
         } catch (_: IllegalArgumentException) {

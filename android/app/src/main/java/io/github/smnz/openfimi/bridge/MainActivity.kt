@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -15,6 +17,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.LinearLayout
@@ -37,6 +40,8 @@ class MainActivity : Activity() {
     private lateinit var detailView: TextView
     private lateinit var recordButton: Button
     private lateinit var connectButton: Button
+    private lateinit var rthButton: Button
+    private lateinit var rthView: TextView
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -138,6 +143,14 @@ class MainActivity : Activity() {
         startForegroundService(i)
     }
 
+    /** The big red button: the bridge itself stops any route and commands return-and-land. */
+    private fun emergencyRth() {
+        if (!BridgeState.connected) return
+        startService(Intent(this, BridgeService::class.java).setAction(BridgeService.ACTION_EMERGENCY_RTH))
+        BridgeState.emergency = "Emergency RTH: sending…"
+        refresh()
+    }
+
     private fun toggleRecording() {
         val cap = BridgeState.capture
         if (cap != null) {
@@ -167,6 +180,11 @@ class MainActivity : Activity() {
             if (s.dropped > 0) sb.append("Dropped chunks (slow client): ${s.dropped}\n")
             s.capture?.let { sb.append("\nRecording ${it.file.name} (${human(it.bytes)})\n${it.file.parent}\n") }
             sb.append("\n").append(s.status)
+            val events = s.recentEvents()
+            if (events.isNotEmpty()) {
+                sb.append("\n\nEvents:\n")
+                for (e in events) sb.append("  ").append(e).append('\n')
+            }
         } else {
             sb.append("1. Plug the phone into the remote's USB port.\n")
             sb.append("2. Switch the remote on; choose \"openfimi bridge\" if Android asks.\n")
@@ -174,6 +192,10 @@ class MainActivity : Activity() {
             sb.append("The FIMI app cannot be open at the same time.")
         }
         detailView.text = sb.toString()
+        rthButton.isEnabled = s.connected
+        rthButton.alpha = if (s.connected) 1f else 0.4f
+        rthView.text = s.emergency
+        rthView.visibility = if (s.emergency.isEmpty()) View.GONE else View.VISIBLE
         recordButton.text = if (s.capture != null) "Stop recording" else "Record session"
         recordButton.isEnabled = s.connected
         connectButton.text = if (s.connected) "Stop bridge" else "Connect"
@@ -201,6 +223,26 @@ class MainActivity : Activity() {
             setPadding(0, pad, 0, pad / 2)
         }
         col.addView(statusView)
+        rthButton = Button(this).apply {
+            text = "EMERGENCY\nRETURN HOME"
+            textSize = 24f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(0xD3, 0x2F, 0x2F))
+                cornerRadius = pad / 2f
+            }
+            minHeight = pad * 7
+            setOnClickListener { emergencyRth() }
+        }
+        col.addView(rthButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        rthView = TextView(this).apply {
+            textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, pad / 2, 0, pad / 2)
+        }
+        col.addView(rthView)
         detailView = TextView(this).apply {
             textSize = 14f
             typeface = Typeface.MONOSPACE
