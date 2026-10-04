@@ -16,6 +16,9 @@ object BridgeState {
     @Volatile var capture: Capture? = null
     @Volatile var sendHello = true
 
+    /** Set when the user stops the bridge, so reopening the app does not reconnect. */
+    @Volatile var userStopped = false
+
     fun reset(acc: UsbAccessory) {
         connected = true
         accessory = listOfNotNull(acc.manufacturer, acc.model, acc.version).joinToString(" · ")

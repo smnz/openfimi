@@ -60,6 +60,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildUi())
+        // Clear any notification left behind by an earlier version or a crash.
+        if (!BridgeState.connected) BridgeService.cancelNotification(this)
         registerReceiver(permissionReceiver, IntentFilter(ACTION_PERMISSION), RECEIVER_NOT_EXPORTED)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
@@ -94,7 +96,7 @@ class MainActivity : Activity() {
         if (intent?.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
             // Launched by the system for the remote: permission is already granted.
             accessoryFrom(intent)?.let { startBridge(it) }
-        } else if (!BridgeState.connected) {
+        } else if (!BridgeState.connected && !BridgeState.userStopped) {
             connect()
         }
     }
@@ -124,7 +126,14 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun stopBridge() {
+        BridgeState.userStopped = true
+        stopService(Intent(this, BridgeService::class.java))
+        BridgeService.cancelNotification(this)
+    }
+
     private fun startBridge(acc: UsbAccessory) {
+        BridgeState.userStopped = false
         val i = Intent(this, BridgeService::class.java).putExtra(BridgeService.EXTRA_ACCESSORY, acc)
         startForegroundService(i)
     }
@@ -206,9 +215,9 @@ class MainActivity : Activity() {
         connectButton = Button(this).apply {
             setOnClickListener {
                 if (BridgeState.connected) {
-                    startService(Intent(this@MainActivity, BridgeService::class.java)
-                        .setAction(BridgeService.ACTION_STOP))
+                    stopBridge()
                 } else {
+                    BridgeState.userStopped = false
                     connect()
                 }
             }
@@ -216,6 +225,13 @@ class MainActivity : Activity() {
         recordButton = Button(this).apply { setOnClickListener { toggleRecording() } }
         row.addView(connectButton)
         row.addView(recordButton)
+        row.addView(Button(this).apply {
+            text = "Quit"
+            setOnClickListener {
+                stopBridge()
+                finishAndRemoveTask()
+            }
+        })
         col.addView(row)
         col.addView(CheckBox(this).apply {
             text = "Send the app's 0x00 byte on connect"

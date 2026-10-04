@@ -34,6 +34,10 @@
                 android:resource="@xml/accessory_filter" />
         </activity>
 
+        <receiver
+            android:name=".StopReceiver"
+            android:exported="false" />
+
         <service
             android:name=".BridgeService"
             android:exported="false"
