@@ -11,6 +11,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, fields
+from enum import IntEnum
 
 from .framing import Frame
 from .modules import Module
@@ -31,6 +32,15 @@ def _need(body: bytes, n: int, name: str) -> None:
 
 
 # --- FC group 12: the continuous telemetry push -----------------------------
+
+
+class FlightPhase(IntEnum):
+    """FcHeart.flight_phase values observed in flight (codes 0 and 5 not yet seen)."""
+
+    ON_GROUND = 1
+    TAKING_OFF = 2
+    FLYING = 3
+    LANDING = 4
 
 
 @dataclass
@@ -77,13 +87,23 @@ class FcSportState(_Msg):
     lat: float
     lon: float
     height_m: float  # relative to take-off
-    ground_speed_raw: int  # UNCERTAIN scale
-    down_velocity_raw: int  # UNCERTAIN scale
+    ground_speed_raw: int  # likely cm/s (needs a forward-flight check)
+    down_velocity_raw: int  # despite the app's name: cm/s, POSITIVE = UP (flight-verified)
     roll_deg: float
     pitch_deg: float
     yaw_deg: float
     home_distance_m: float
     extra_raw: int  # UNCERTAIN meaning
+
+    @property
+    def vertical_speed_ms(self) -> float:
+        """Climb rate in m/s, positive up (verified on take-off and landing)."""
+        return self.down_velocity_raw / 100
+
+    @property
+    def ground_speed_ms(self) -> float:
+        """Horizontal speed in m/s, assuming cm/s like the vertical field."""
+        return self.ground_speed_raw / 100
 
     @classmethod
     def decode(cls, b: bytes) -> FcSportState:

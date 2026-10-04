@@ -176,6 +176,21 @@ its arguments.
 2/114. Reassembled, they give clean HEVC Main 1280×720 at about 21 fps, with
 VPS/SPS/PPS/SEI and an IDR roughly every 1.2 s, at about **0.4 Mbit/s**.
 
+## 4c. First flight (auto take-off and auto land, 2026-10-04)
+
+* **Take-off FC 3/16** answered with code 0 even though `takeOffCap` and
+  `autoTakeOffCap` both read 0, so those flags do not gate take-off. The
+  aircraft climbed to about 2.5 m in about 7 s and hovered.
+* **Land FC 3/21** answered with code 0. Descent at about 0.3 m/s; on the
+  ground 12 s later.
+* `flightPhase`: **1 on the ground, 2 taking off, 3 flying/hovering, 4 landing.**
+* `NavigationState.taskMode` 4 during take-off and 5 during landing;
+  `apStatus` 32 while landing.
+* SportState offset 22 (the app's "downVelocity") is **cm/s, positive up**:
+  +81 climbing at about 0.7 m/s, −27…−34 descending at about 0.3 m/s. Ground
+  speed (offset 20) read single digits while hovering, probably cm/s.
+* The barometric height briefly read −0.5 m just before touchdown.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte
@@ -245,8 +260,8 @@ Flight-tested behaviour of the stock firmware with routes uploaded by the app:
   handshake or accepts a device that is already `18d1:2d00`.
 * Scales: SportState ground and vertical speed (needs flight), battery current
   (likely mA) and time remaining.
-* `flightPhase` codes 3 and 4; `FcErrCode` bits; `NavigationState` values;
-  result codes beyond 0.
+* `flightPhase` codes 0 and 5; `FcErrCode` bits; the remaining
+  `NavigationState` values; result codes beyond 0.
 * Whether the FC obeys virtual-stick frames while the physical RC is also
   sending sticks over the radio, and whether it needs a mode switch first.
 * The split between the two UDP ports on the Wi-Fi link.
