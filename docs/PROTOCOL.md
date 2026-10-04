@@ -218,6 +218,21 @@ VPS/SPS/PPS/SEI and an IDR roughly every 1.2 s, at about **0.4 Mbit/s**.
   change in home distance.
 * Battery: 86 % → 79 % for a 2-minute flight.
 
+## 4f. Take-off refusal and fault alarms
+
+* `FcHeart` bytes 11 and 12 (the app's `takeOffCap` / `autoTakeOffCap`) are
+  **refusal codes, 0 = take-off allowed**. After three flights in the sun
+  both read **236**, and take-off was refused with **code 236**.
+* At the same time FC error word A gained **bit 17**. The app's
+  `assets/Alarms.json` maps FCS-A bit 17 (on the ground) to message 181:
+  *"Sensor temperature too high, please power off and cool down."* The
+  battery read 46 °C.
+* The app's alarm system: `Alarms.json` lists entries `{GroupID, OffsetBit or
+  Value, Severity, Text, IsInFlight}`, and `assets/<lang>.txt` maps the Text
+  numbers to messages. Groups: FCS-A/B/C/D = the four `FcErrCode` words; MTC/ATC
+  = the two heartbeat refusal codes; also RCS, NFZS, CVS and P2P. openfimi does
+  not redistribute FIMI's tables; they can be read from your own copy of the APK.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte

@@ -187,7 +187,7 @@ class SimAircraft:
         fc = Module.FC
         hdr = lambda g, m: bytes((g, m, 0, 0))
         self._send(
-            fc, hdr(12, 1) + struct.pack("<hh", 0, 0) + bytes((0, 0, self.phase, 0, 0, 0, 0, 1, 1))
+            fc, hdr(12, 1) + struct.pack("<hh", 0, 0) + bytes((0, 0, self.phase, 0, 0, 0, 0, 0, 0))
         )
         home_d = math.hypot(
             (self.lat - self.home[0]) * M_PER_DEG,

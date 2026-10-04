@@ -299,3 +299,72 @@ def mission_from_dict(d: dict) -> Mission:
         rc_lost=_enum(LostAction, d.get("rc_lost", "exit")),
         auto_record=d.get("auto_record", False),
     )
+
+
+# ---------------------------------------------------------------------------
+# Routes saved by the FIMI app (its SQLite database, as pulled from the phone)
+# ---------------------------------------------------------------------------
+
+#: POINT_ACTION_CMD values the app's route editor writes, and what it uploads.
+FIMI_DB_ACTIONS = {
+    0: PointAction.none,
+    1: lambda: PointAction.hover(10),
+    2: lambda: PointAction.record(10),
+    3: PointAction.none,  # "4x slow motion": the app uploads nothing for it
+    4: lambda: PointAction.photo(1),
+    5: lambda: PointAction.hover_then_photo(5, 1),
+    6: lambda: PointAction.photo(3),
+}
+
+
+def mission_from_fimi_db(path: str, route: str | int) -> Mission:
+    """Load a route from the FIMI app database by name or ``_id``.
+
+    Mirrors what the app uploads for a saved route: route TYPE is the heading
+    mode, EXCUTE_END the finish action, DISCONNECT_TYPE the RC-lost action,
+    POINT_ACTION_CMD the waypoint action.  Speed comes from the waypoint SPEED
+    column (decimetres/s) rather than the integer route speed.
+    """
+    import sqlite3
+
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        col = "_id" if isinstance(route, int) else "NAME"
+        head = db.execute(
+            f"SELECT _id, TYPE, SPEED, DISCONNECT_TYPE, EXCUTE_END FROM X8_AI_LINE_POINT_INFO "
+            f"WHERE {col} = ? ORDER BY TIME DESC LIMIT 1",
+            (route,),
+        ).fetchone()
+        if head is None:
+            raise KeyError(f"route {route!r} not found in {path}")
+        line_id, rtype, rspeed, disconnect, end = head
+        rows = db.execute(
+            "SELECT LATITUDE, LONGITUDE, ALTITUDE, SPEED, POINT_ACTION_CMD, RORATION, "
+            "LATITUDE_POI, LONGITUDE_POI, ALTITUDE_POI, GIMBAL_PITCH "
+            "FROM X8_AI_LINE_POINT_LATLNG_INFO WHERE LINE_ID = ? ORDER BY NUMBER",
+            (line_id,),
+        ).fetchall()
+    finally:
+        db.close()
+    wps = []
+    for lat, lon, alt, spd, act, rot, plat, plon, palt, gp in rows:
+        poi = (plat, plon, float(palt)) if (plat or plon) else None
+        wps.append(
+            Waypoint(
+                lat=lat,
+                lon=lon,
+                alt_m=float(alt),
+                action=FIMI_DB_ACTIONS.get(act, PointAction.none)(),
+                poi=poi,
+                gimbal_pitch_deg=gp / 100,
+                rotation=_enum(Rotation, rot),
+                speed_ms=spd / 10 if spd else None,
+            )
+        )
+    return Mission(
+        wps,
+        speed_ms=float(rspeed),
+        heading=_enum(Heading, rtype),
+        finish=_enum(FinishAction, end),
+        rc_lost=_enum(LostAction, disconnect),
+    )

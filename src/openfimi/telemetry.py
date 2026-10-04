@@ -69,8 +69,20 @@ class FcHeart(_Msg):
         return self.flight_phase in (0, 1, 5)
 
     @property
+    def takeoff_block(self) -> int:
+        """Why take-off would be refused: 0 = allowed (flight-verified).
+
+        The app names these bytes takeOffCap / autoTakeOffCap, but they are
+        refusal codes: both read 0 before every accepted take-off, and 236 when
+        take-off was refused with code 236 while the "sensor temperature too
+        high" alarm (FCS-A bit 17) was active.  The app shows them as the MTC /
+        ATC alarm groups (e.g. ATC 240 = IMU check in progress).
+        """
+        return self.auto_takeoff_cap or self.takeoff_cap
+
+    @property
     def can_take_off(self) -> bool:
-        return bool(self.takeoff_cap and self.auto_takeoff_cap)
+        return self.on_ground and self.takeoff_cap == 0 and self.auto_takeoff_cap == 0
 
     @classmethod
     def decode(cls, b: bytes) -> FcHeart:
@@ -134,13 +146,37 @@ class FcSignalState(_Msg):
 
 @dataclass
 class FcErrCode(_Msg):
-    """Four 32-bit status/fault bitmasks (FC 12/4); bit meanings unknown."""
+    """Four 32-bit fault bitmasks (FC 12/4): the app's FCS-A, FCS-B, FCS-C, FCS-D.
+
+    The app maps each set bit to an alarm through its Alarms.json table (group,
+    bit, in-flight or not) and a numbered message list.  Example seen in the
+    field: FCS-A bit 17 on the ground = "sensor temperature too high, power
+    off and cool down", which also blocks take-off (code 236).
+    """
 
     KEY = (Module.FC, 12, 4)
     a: int
     b: int
     c: int
     d: int
+
+    def bits(self) -> dict[str, list[int]]:
+        """Set bits per group, e.g. {"FCS-A": [17], "FCS-C": [13, 17, 19]}."""
+        out = {}
+        for name, word in (
+            ("FCS-A", self.a),
+            ("FCS-B", self.b),
+            ("FCS-C", self.c),
+            ("FCS-D", self.d),
+        ):
+            set_bits = [i for i in range(32) if word >> i & 1]
+            if set_bits:
+                out[name] = set_bits
+        return out
+
+    @property
+    def sensor_overheat(self) -> bool:
+        return bool(self.a >> 17 & 1)
 
     @classmethod
     def decode(cls, b: bytes) -> FcErrCode:

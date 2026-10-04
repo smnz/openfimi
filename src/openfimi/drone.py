@@ -100,7 +100,13 @@ class DroneState:
                 home_m=round(s.home_distance_m, 1),
             )
         if self.heart:
-            out.update(phase=self.heart.flight_phase, flying=self.heart.flying)
+            out.update(
+                phase=self.heart.flight_phase,
+                flying=self.heart.flying,
+                takeoff_block=self.heart.takeoff_block,
+            )
+        if self.errors and self.errors.bits():
+            out.update(faults=self.errors.bits())
         if self.battery:
             out.update(battery_pct=self.battery.percent, volts=self.battery.voltage)
         if self.signal:
