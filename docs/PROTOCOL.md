@@ -285,6 +285,29 @@ Route at 50 m with waypoint speeds 2.8 / 8.3 / 8.3 / 11 / 8.3 / 11 / 2.8 m/s
   straight-line ETA of 15 s at 8.3 m/s), −45.8° by 210.7 s, photo at 235.5 s:
   25 s of real lead, because of the slow deceleration.
 
+## 4j. Result codes, start-up and power (observed)
+
+Result codes in the reply's 12-bit report field:
+
+| Code | Seen on | Meaning (from context) |
+|---|---|---|
+| 0 | everything accepted | OK |
+| 22 | land (3/21) on the ground | not flying |
+| 30 | fly-to go (3/48) without a target | no target set |
+| 236 | take-off (3/16) | take-off blocked: equals the heartbeat refusal code (here: sensor overheat) |
+
+**Take-off refusal codes after power-on** (heartbeat bytes 11/12), about 10 s
+from power-on to cleared: 241 → 216 → 214 → 246 → 214 → **0**, while
+satellites rose from 0 to 30+ and the home point was recorded. 240 is "IMU
+check in progress" in the app's alarm table; the others are unnamed there.
+
+**Power:** the RC's phone port supplies power (the phone reported charging),
+so a gadget board on that port can run off the RC.
+
+**Heat:** the aircraft is cooled by airflow in flight. Powered on the ground
+between short flights for about an hour, it reached 47 °C battery, set the
+sensor-overheat fault and refused take-off until powered off and cooled.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte

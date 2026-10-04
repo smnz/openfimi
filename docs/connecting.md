@@ -13,8 +13,8 @@ the same over any of them.
 
 | Option | Range | Extra hardware | Status |
 |---|---|---|---|
+| **Android phone bridge app** (`android/`) | full RC range | none (your existing phone) | **flight-tested** |
 | **Pi Zero 2 W as a USB gadget** (`openfimi bridge`) | full RC range | Pi Zero 2 W + cable (~US$15) | implemented; needs field test |
-| **Android phone bridge app** | full RC range | none (your existing phone) | planned |
 | Other Linux board with USB device mode (Pi 4/5, many SBCs) | full RC range | the board | same code as the Pi Zero |
 | Direct Wi-Fi to the aircraft (`-u udp`) | **tens of metres** | Wi-Fi adapter | bench/dev only |
 | `openfimi sim` simulator | n/a | none | implemented |
@@ -27,9 +27,9 @@ the same over any of them.
 ```
 
 The Zero has two micro-USB ports. The one marked **PWR** is power only. The
-one marked **USB** is the OTG data port, so it goes to the RC. Power the Pi
-from its PWR port, either from a power bank or from the RC's own charging
-output if it has one.
+one marked **USB** is the OTG data port, so it goes to the RC. The RC's
+phone port supplies power (it charges a phone), so the Zero may run from that
+cable alone; otherwise power it through PWR from a power bank.
 
 1. Flash Raspberry Pi OS Lite (Bookworm) with Wi-Fi and SSH configured.
 2. On the Pi: `sudo bash scripts/pi-zero-setup.sh` (or pipe it from GitHub).
@@ -53,14 +53,24 @@ These work the same way through their USB-C port, but that port also powers
 the board. Feed power through the GPIO 5 V pins, or use a USB-C power/data
 splitter, so that the RC only has to provide data.
 
-## 2. Android phone bridge (lowest friction, planned)
+## 2. Android phone bridge (lowest friction; the one flight-tested)
 
-Every FIMI owner already has a phone that works with this RC. A small
-open-source app would open the RC accessory just as the FIMI app does and relay
-the byte stream over TCP on the local network (phone hotspot or shared Wi-Fi).
-The computer then uses `-u tcp://<phone-ip>`. The phone becomes a dumb modem
-while openfimi does the work. The wire format is the same as the Pi bridge
-(raw bytes both ways), so nothing changes on the Python side.
+Every FIMI owner already has a phone that works with this RC. The
+openfimi bridge app (`android/`) opens the RC accessory just as the FIMI app
+does and relays the byte stream over TCP port 10052 on the local network
+(shared Wi-Fi or the phone's hotspot). The computer uses
+`-u tcp://<phone-ip>`, and the app shows the address. The phone becomes a
+dumb modem while openfimi does the work. The wire format is the same as the
+Pi bridge (raw bytes both ways).
+
+* Build: `cd android && ./gradlew assembleDebug`, then install the APK.
+* Plug the phone into the RC and switch the RC on. Android asks which app
+  to open; choose *openfimi bridge* ("Just once" keeps the FIMI app usable).
+* The FIMI app cannot use the RC at the same time.
+* It runs as a foreground service with wake and Wi-Fi locks, advertises
+  `_openfimi._tcp` over mDNS, and can record sessions to `.ofcap` files for
+  `openfimi decode`. *Stop* or *Quit* releases the RC.
+* The RC powers the phone through the same cable.
 
 ## 3. Direct Wi-Fi (bench only)
 
