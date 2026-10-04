@@ -19,7 +19,14 @@ Each move is a waypoint some metres ahead in the direction of the held keys
 whole time and yaw keys turn it.  A new route is sent when the input changes, or
 while it is held and the aircraft gets near the waypoint.  Releasing every
 input, or none arriving for ``deadman`` seconds, stops the route and the
-aircraft hovers.  Moves start and stop gently (about 0.5 m/s^2).
+aircraft hovers.
+
+Flight-verified (three flights, 2026-10-04): turns in place in both directions
+to within 1 deg, straight moves along the turned heading, straight climbs and
+descents that stop on release, mid-move direction changes.  Each route starts
+after about 1 s and accelerates at about 0.5 m/s^2, so it suits deliberate
+positioning (a 3 s press moves 1-2 m, 6 s about 10 m) rather than stick-like
+flying.
 """
 
 from __future__ import annotations

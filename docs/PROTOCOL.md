@@ -327,6 +327,26 @@ sensor-overheat fault and refused take-off until powered off and cooled.
   command for it is known. The FC firmware is encrypted, so an undocumented
   opcode cannot be ruled out.
 
+## 4l. Manual flight through the RC: one-point routes (2026-10-04)
+
+Three scripted flights at 15 m (`openfimi.manual.ManualFlight`):
+
+* **Fly-to cannot be re-targeted mid-move**: 3/48 while a fly-to flies → code
+  21. A route upload (3/36) during a fly-to, or for about 1.6 s after it
+  arrives, → code 41; exiting it (3/51) first clears both.
+* **A route can be restarted mid-flight**: stop (3/35), point (3/36), action
+  (3/37), start (3/32) was accepted every time.
+* **Turning:** a one-point route **at the current position** with heading Free
+  and a POI 500 m along the wanted heading turns the nose in place: +42° for
+  a +42° request and −45° for −46°, drifting ≤ 0.3 m.
+* **Moving:** with the POI kept on the desired heading, travel goes straight
+  along it and the nose doesn't drift (10.2 m forward with 0.1 m sideways). A
+  waypoint at the same lat/lon at another altitude climbs or descends straight up or down.
+* **Response:** each route starts after about 1 s and accelerates at about
+  0.5 m/s². A 1.5 s press moved ±0.3 m, a 3 s press about 1–2 m, and a 6 s
+  full-input press 10.2 m (peaking at 2.8 m/s toward a 5 m/s target). Stopping
+  the route (3/35) stops a climb or descent in progress.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte
