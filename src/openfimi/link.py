@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable
@@ -89,7 +90,9 @@ class Link:
         self._outer = OuterDecoder()
         self._inner = InnerDecoder(verify=verify_crc)
         self._video = Depacketizer()
-        self._seq = 0
+        # Random start, so several clients sharing a bridge rarely collide on
+        # (group, msg_id, seq) when matching replies.
+        self._seq = random.randrange(SEQ_WRAP)
         self._seq_lock = threading.Lock()
         self._pending: dict[tuple[int, int, int], _Pending] = {}
         self._pending_lock = threading.Lock()

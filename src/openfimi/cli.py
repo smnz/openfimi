@@ -87,7 +87,9 @@ def cmd_monitor(args) -> int:
 
 
 def cmd_video(args) -> int:
-    with Drone(_transport(args)) as d:
+    # Purely passive by default: video flows without any command, so a viewer
+    # never interferes with another client driving the aircraft.
+    with Drone(_transport(args), init_camera=args.fpv_config) as d:
         if args.output:
             sink = (
                 FfmpegSink.ffmpeg(args.output, args.codec)
@@ -274,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
         "-o", "--output", help="'-' for raw stream on stdout, .h265/.h264 raw file, or .mp4/.mkv"
     )
     sp.add_argument("--codec", default="hevc", choices=["hevc", "h264"])
+    sp.add_argument(
+        "--fpv-config", action="store_true", help="send the app's FPV config command on connect"
+    )
     sp.set_defaults(fn=cmd_video)
 
     sp = sub.add_parser("send", help="send one command")
