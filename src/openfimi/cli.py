@@ -183,9 +183,21 @@ def _load_route(args):
         m = mission_from_dict(json.loads(Path(args.file).read_text()))
     else:
         sys.exit("give a route JSON file or --fimi-db DB --route NAME")
+    from .mission import GimbalMode
+
     if args.pitch is not None:
         for w in m.waypoints:
             w.gimbal_pitch_deg = args.pitch
+            if args.gimbal_mode is None:
+                w.gimbal_mode = GimbalMode.BEFORE_ARRIVAL
+    if args.gimbal_mode is not None:
+        mode = {
+            "none": GimbalMode.NONE,
+            "before": GimbalMode.BEFORE_ARRIVAL,
+            "arrival": GimbalMode.ON_ARRIVAL,
+        }[args.gimbal_mode]
+        for w in m.waypoints:
+            w.gimbal_mode = mode
     m.validate()
     return m
 
@@ -199,22 +211,24 @@ def cmd_mission(args) -> int:
             print("\nuploaded", len(m.waypoints), "waypoints")
         elif args.op == "fly":
             m = _load_route(args)
-            pitches = sorted({w.gimbal_pitch_deg for w in m.waypoints})
+            gim = [
+                f"wp{i} {w.gimbal_pitch_deg:g} deg {w.gimbal_mode.name.lower()}"
+                for i, w in enumerate(m.waypoints)
+                if w.gimbal_mode
+            ]
             print(
                 f"route: {len(m.waypoints)} waypoints, finish={m.finish!r}, "
-                f"gimbal pitches {pitches} ({args.gimbal})"
+                f"gimbal: {', '.join(gim) if gim and args.gimbal != 'off' else 'untouched'}"
             )
             d.wait_until(lambda s: s.battery and s.signal and s.errors, 5)
             problems = d.preflight()
             if problems and not d.state.flying:
                 sys.exit("not ready: " + "; ".join(problems))
             _confirm(args, f"FLY THE {len(m.waypoints)}-WAYPOINT ROUTE")
-            follow = None if args.gimbal == "auto" else args.gimbal != "off"
-            mode = args.gimbal if args.gimbal in ("lead", "step", "interpolate") else "lead"
             res = d.fly_route(
                 m,
-                follow_gimbal=follow,
-                gimbal_mode=mode,
+                follow_gimbal=False if args.gimbal == "off" else None,
+                gimbal_lead_s=args.lead,
                 on_event=lambda e: print(f"{time.strftime('%H:%M:%S')} {e}", flush=True),
             )
             print(res)
@@ -337,12 +351,27 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("file", nargs="?", help="route JSON (fly/upload)")
     sp.add_argument("--fimi-db", help="FIMI app database to read the route from")
     sp.add_argument("--route", help="route name or _id in --fimi-db")
-    sp.add_argument("--pitch", type=float, help="override every waypoint's gimbal pitch (deg)")
+    sp.add_argument(
+        "--pitch",
+        type=float,
+        help="every waypoint's gimbal pitch, degrees (-90 = down); implies --gimbal-mode before",
+    )
+    sp.add_argument(
+        "--gimbal-mode",
+        choices=["none", "before", "arrival"],
+        help="set every waypoint's gimbal mode (default: as stored per waypoint)",
+    )
     sp.add_argument(
         "--gimbal",
         default="auto",
-        choices=["auto", "step", "interpolate", "off"],
-        help="per-waypoint gimbal pitch (auto: on if any pitch is set)",
+        choices=["auto", "off"],
+        help="off = ignore all gimbal settings for this flight",
+    )
+    sp.add_argument(
+        "--lead",
+        type=float,
+        default=15.0,
+        help="'before' mode: seconds before arrival (default 15)",
     )
     sp.add_argument("-y", "--yes", action="store_true")
     sp.set_defaults(fn=cmd_mission)

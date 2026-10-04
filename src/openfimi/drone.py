@@ -283,7 +283,6 @@ class Drone:
         *,
         takeoff: bool = True,
         follow_gimbal: bool | None = None,
-        gimbal_mode: str = "lead",
         gimbal_lead_s: float = 15.0,
         wait: bool = True,
         timeout: float = 1800.0,
@@ -298,7 +297,7 @@ class Drone:
 
         ``follow_gimbal`` drives the per-waypoint gimbal pitch the aircraft
         itself ignores (see :mod:`openfimi.follow`); by default it is on when any
-        waypoint has a non-zero pitch.
+        waypoint has a gimbal mode other than NONE.
         """
         from .follow import GimbalFollower, ground_distance
 
@@ -354,14 +353,14 @@ class Drone:
         follow = (
             follow_gimbal
             if follow_gimbal is not None
-            else any(w.gimbal_pitch_deg for w in mission.waypoints)
+            else any(w.gimbal_mode for w in mission.waypoints)
         )
         follower = (
-            GimbalFollower(self, mission, mode=gimbal_mode, lead_s=gimbal_lead_s, on_event=say)
-            if follow
-            else None
+            GimbalFollower(self, mission, lead_s=gimbal_lead_s, on_event=say) if follow else None
         )
         if follower:
+            for line in follower.plan():
+                say(f"gimbal plan: {line}")
             follower.start()
         r = self.start_mission(timeout=5)
         if r is None or not r.ok:

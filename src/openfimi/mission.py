@@ -60,6 +60,19 @@ class LostAction(IntEnum):
     CONTINUE = 1
 
 
+class GimbalMode(IntEnum):
+    """When openfimi's gimbal follower applies a waypoint's gimbal pitch.
+
+    The aircraft ignores the per-waypoint pitch on routes, so this is applied
+    from the ground station (:mod:`openfimi.follow`); it is never sent to the
+    aircraft.  Stored in the FIMI database's otherwise unused GIMBAL_MODE column.
+    """
+
+    NONE = 0  # leave the gimbal alone at this waypoint
+    BEFORE_ARRIVAL = 1  # in position 15 s before arrival (photos)
+    ON_ARRIVAL = 2  # move when the waypoint is reached (video)
+
+
 class Action(IntEnum):
     """Wire action codes for a point action slot."""
 
@@ -127,7 +140,8 @@ class Waypoint:
     action: PointAction = field(default_factory=PointAction)
     poi: tuple[float, float, float] | None = None  # (lat, lon, alt_m)
     yaw_deg: float = 0.0  # used in Heading.WAYPOINT
-    gimbal_pitch_deg: float = 0.0  # transmitted, ignored by stock firmware on routes
+    gimbal_pitch_deg: float = 0.0  # -90 down .. +10 up; the aircraft ignores it on routes
+    gimbal_mode: GimbalMode = GimbalMode.NONE  # applied by openfimi.follow
     rotation: Rotation = Rotation.MIN_ANGLE
     # Per-point overrides of the route settings (None = use the route value).
     speed_ms: float | None = None
@@ -286,6 +300,7 @@ def mission_from_dict(d: dict) -> Mission:
                 poi=tuple(w["poi"]) if w.get("poi") else None,
                 yaw_deg=w.get("yaw_deg", 0.0),
                 gimbal_pitch_deg=w.get("gimbal_pitch_deg", 0.0),
+                gimbal_mode=_enum(GimbalMode, w.get("gimbal_mode", "none")),
                 rotation=_enum(Rotation, w.get("rotation", "min_angle")),
                 speed_ms=w.get("speed_ms"),
                 heading=_enum(Heading, w.get("heading")),
@@ -320,6 +335,10 @@ FIMI_DB_ACTIONS = {
 def mission_from_fimi_db(path: str, route: str | int) -> Mission:
     """Load a route from the FIMI app database by name or ``_id``.
 
+    GIMBAL_PITCH (hundredths of a degree, -9000 = straight down) and
+    GIMBAL_MODE (0 none, 1 before arrival, 2 on arrival) drive openfimi's
+    gimbal follower; the FIMI app ignores both on routes.
+
     Mirrors what the app uploads for a saved route: route TYPE is the heading
     mode, EXCUTE_END the finish action, DISCONNECT_TYPE the RC-lost action,
     POINT_ACTION_CMD the waypoint action.  Speed comes from the waypoint SPEED
@@ -340,14 +359,14 @@ def mission_from_fimi_db(path: str, route: str | int) -> Mission:
         line_id, rtype, rspeed, disconnect, end = head
         rows = db.execute(
             "SELECT LATITUDE, LONGITUDE, ALTITUDE, SPEED, POINT_ACTION_CMD, RORATION, "
-            "LATITUDE_POI, LONGITUDE_POI, ALTITUDE_POI, GIMBAL_PITCH "
+            "LATITUDE_POI, LONGITUDE_POI, ALTITUDE_POI, GIMBAL_PITCH, GIMBAL_MODE "
             "FROM X8_AI_LINE_POINT_LATLNG_INFO WHERE LINE_ID = ? ORDER BY NUMBER",
             (line_id,),
         ).fetchall()
     finally:
         db.close()
     wps = []
-    for lat, lon, alt, spd, act, rot, plat, plon, palt, gp in rows:
+    for lat, lon, alt, spd, act, rot, plat, plon, palt, gp, gmode in rows:
         poi = (plat, plon, float(palt)) if (plat or plon) else None
         wps.append(
             Waypoint(
@@ -357,6 +376,7 @@ def mission_from_fimi_db(path: str, route: str | int) -> Mission:
                 action=FIMI_DB_ACTIONS.get(act, PointAction.none)(),
                 poi=poi,
                 gimbal_pitch_deg=gp / 100,
+                gimbal_mode=_enum(GimbalMode, gmode or 0),
                 rotation=_enum(Rotation, rot),
                 speed_ms=spd / 10 if spd else None,
             )
