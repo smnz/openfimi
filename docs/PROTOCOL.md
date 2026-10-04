@@ -204,6 +204,20 @@ VPS/SPS/PPS/SEI and an IDR roughly every 1.2 s, at about **0.4 Mbit/s**.
 * `NavigationState.taskMode` is not a per-command mode: it read 4 throughout
   take-off **and** the following hover, 5 for land and 3 for RTH.
 
+## 4e. Third flight: fly-to 30 m and return home (2026-10-04)
+
+* **Fly-to (3/52 then 3/48) worked.** The target was 25 m ahead at 30 m, 5 m/s.
+  Motion began about 5 s after 3/48, climbing and travelling together (peak
+  3.3 m/s up and 2.8 m/s horizontal), and stopped at 29.9 m, 25.2 m from home,
+  22 s after the command. `taskMode` 2 during fly-to.
+* **Return home from 25 m out at 30 m:** turned toward home, **climbed to
+  the configured RTH altitude (46 m)**, flew home at up to 3.6 m/s, rotated
+  back to the take-off heading, then descended at 2.0 → 1.5 → 1.0 → 0.5 → 0.3
+  m/s, landing 1.0 m from the take-off point. `taskMode` 3 throughout.
+* **Ground speed (SportState offset 20) is cm/s**: raw 284 matched a 2.9 m/s
+  change in home distance.
+* Battery: 86 % → 79 % for a 2-minute flight.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte
@@ -271,8 +285,7 @@ Flight-tested behaviour of the stock firmware with routes uploaded by the app:
 
 * The purpose of the initial `0x00` byte, and whether the RC needs the AOA
   handshake or accepts a device that is already `18d1:2d00`.
-* Scales: SportState ground and vertical speed (needs flight), battery current
-  (likely mA) and time remaining.
+* Scales: battery current (likely mA) and time remaining.
 * `flightPhase` codes 0 and 5; `FcErrCode` bits; the remaining
   `NavigationState` values; result codes beyond 0.
 * Whether the FC obeys virtual-stick frames while the physical RC is also

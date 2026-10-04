@@ -87,7 +87,7 @@ class FcSportState(_Msg):
     lat: float
     lon: float
     height_m: float  # relative to take-off
-    ground_speed_raw: int  # likely cm/s (needs a forward-flight check)
+    ground_speed_raw: int  # cm/s (flight-verified against home-distance change)
     down_velocity_raw: int  # despite the app's name: cm/s, POSITIVE = UP (flight-verified)
     roll_deg: float
     pitch_deg: float
@@ -102,7 +102,7 @@ class FcSportState(_Msg):
 
     @property
     def ground_speed_ms(self) -> float:
-        """Horizontal speed in m/s, assuming cm/s like the vertical field."""
+        """Horizontal speed in m/s (verified in flight)."""
         return self.ground_speed_raw / 100
 
     @classmethod
