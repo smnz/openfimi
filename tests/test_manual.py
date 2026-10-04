@@ -95,22 +95,42 @@ def test_yaw_turns_via_poi_route_then_forward_follows_new_heading():
         rig.close()
 
 
-def test_turn_target_creeps_when_configured():
+def test_retarget_mid_move_and_route_after_fly_to():
+    # The real aircraft refuses a new fly-to mid-move (21) and a route upload
+    # during a fly-to (41); ManualFlight uses restartable routes instead.
     rig = flying_rig()
     try:
         d = rig.drone
-        m = ManualFlight(d, yaw_creep_m=4.0)
-        m.heading = 90.0  # east
-        lat, lon, alt, speed, translating = m._target((0.0, 0.0, 0.0))
-        assert not translating
-        m.start()
-        m.heading = 90.0
-        start = (d.state.sport.lat, d.state.sport.lon)
-        hold(m, 1.0, yaw=0.01)  # below the input threshold: no turn command
-        hold(m, 0.6, yaw=1.0)
-        time.sleep(1.5)
-        moved = ground_distance(start, (d.state.sport.lat, d.state.sport.lon))
-        assert 1.0 < moved < 8.0, moved  # crept a few metres along the new heading
+        events = []
+        m = ManualFlight(d, on_event=events.append).start()
+        hold(m, 1.2, pitch=1.0)
+        hold(m, 1.2, roll=1.0)  # change of direction mid-move
+        assert not any("refused" in e for e in events), events
+        assert rig.sim.log.count("3/32") >= 2
+        m.stop()
+    finally:
+        rig.close()
+
+
+def test_release_stops_a_climb_and_first_move_after_fly_to_is_accepted():
+    rig = flying_rig()
+    try:
+        d = rig.drone
+        # a fly-to that has just arrived (the sim, like the aircraft, then refuses routes)
+        s = d.state.sport
+        d.fly_to(s.lat, s.lon, s.height_m + 1, 1.0)
+        d.wait_until(lambda st: st.sport.ground_speed_ms < 0.1 and rig.sim.activity == "hover", 5)
+        events = []
+        # 30 s lookahead: a +60 m target, still climbing when released
+        m = ManualFlight(d, lookahead_s=30.0, max_alt_m=200, on_event=events.append).start()
+        hold(m, 0.6, throttle=1.0)
+        n_log = len(rig.sim.log)
+        m.centre()
+        time.sleep(1.0)
+        assert not any("refused" in e for e in events), events  # fly-to exited first
+        # releasing a climb stops the route (the real aircraft kept climbing)
+        assert "manual: holding position" in events
+        assert "3/35" in rig.sim.log[n_log:]
         m.stop()
     finally:
         rig.close()

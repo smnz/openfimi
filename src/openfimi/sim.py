@@ -64,6 +64,7 @@ class SimAircraft:
         self.out = None  # callable(bytes) that delivers to the ground station
         self._seq = 0
         self._fly_to = None
+        self._fly_to_lock = 0.0
         self._outer, self._inner = OuterDecoder(), InnerDecoder()
         self._lock = threading.Lock()
         self.log: list[str] = []
@@ -133,17 +134,25 @@ class SimAircraft:
                 self._rth(ap_status=2)
             else:
                 code = 1
+        elif key == (Module.FC, 3, 51):
+            self._fly_to_lock = 0.0
+            if self.flying:
+                self._go("hover", None, 4)
         elif key in (
             (Module.FC, 3, 19),
             (Module.FC, 3, 24),
             (Module.FC, 3, 29),
             (Module.FC, 3, 35),
-            (Module.FC, 3, 51),
         ):
             if self.flying:
                 self._go("hover", None, 4)
         elif key == (Module.FC, 3, 36):
-            self.waypoints[body[0]] = body
+            if self.activity == "fly_to" or time.monotonic() < self._fly_to_lock:
+                # Real aircraft: no route upload during a fly-to, nor for ~1.6 s
+                # after one arrives unless it is exited (3/51).
+                code = 41
+            else:
+                self.waypoints[body[0]] = body
         elif key == (Module.FC, 3, 37):
             self.actions[body[0]] = body
         elif key == (Module.FC, 3, 32):
@@ -180,6 +189,8 @@ class SimAircraft:
         elif key == (Module.FC, 3, 48):
             if self._fly_to is None or not self.flying:
                 code = 30  # what the real aircraft answers without a target
+            elif self.activity == "fly_to":
+                code = 21  # real aircraft: no new fly-to while one is flying
             else:
                 self._go("fly_to", self._fly_to, 2)
         elif key == (Module.GIMBAL, 9, 6):
@@ -232,6 +243,7 @@ class SimAircraft:
             self._go("hover", None, 4)
         elif a == "fly_to":
             self._go("hover", None, 2)
+            self._fly_to_lock = time.monotonic() + 1.6
         elif a == "route":
             i = self.route_i
             self.reached = i + 1  # the real wpNUM ticks on arrival, before the action

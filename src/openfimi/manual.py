@@ -1,30 +1,25 @@
-"""Keyboard / joystick-style flying through the RC link, with autopilot commands.
+"""Keyboard / joystick-style flying through the RC link, with one-point routes.
 
 Virtual-stick frames (11/2) do nothing when the aircraft is flown through its
 remote controller: the FIMI app only sends them over the direct Wi-Fi link, and
 a flight test confirmed the aircraft ignores them over the RC link (318 frames,
-no movement).  :class:`ManualFlight` therefore turns held stick inputs into
-autopilot targets, which do work over the RC link:
+no movement).  :class:`ManualFlight` therefore flies every move as a one-waypoint
+route, which does work over the RC link and, unlike fly-to, can be replaced in
+flight (flight test 2026-10-04):
 
-* **Moving** (forward/back/left/right, up/down): a fly-to target (3/52 then
-  3/48) a few metres ahead, re-targeted while the input is held.  Directions
-  are relative to the *desired heading* below, not the nose, because fly-to
-  turns the nose toward its travel direction.
-* **Turning** (yaw): yaw input turns a desired heading.  While the aircraft's
-  heading differs from it, moves are sent instead as a one-waypoint route with
-  heading mode Free and a POI 500 m away along the desired heading; the
-  aircraft yaws to face a POI (flight-tested on routes, with the bearing taken
-  from its live position).  The route is stopped (3/35), uploaded and started
-  (3/32) each time.
-* Releasing every input, or none arriving for ``deadman`` seconds, cancels the
-  move and the aircraft hovers.
+* a fly-to (3/52 + 3/48) cannot be re-targeted while it is flying (code 21),
+  and a route cannot be uploaded during one (code 41);
+* "stop route (3/35), upload point + action (3/36, 3/37), start (3/32)" was
+  accepted repeatedly in mid-flight, and with heading mode Free and a POI the
+  nose turned to face the POI (seen in the video).
 
-Moves are autopilot legs, so they start and stop gently (about 0.5 m/s^2 in
-flight tests).  Not yet flight-tested: re-targeting a fly-to in progress, very
-short or vertical-only targets, and whether a one-point route *at the current
-position* turns the nose (on routes the POI yaw happened during the leg toward
-the waypoint).  If it does not, set ``yaw_creep_m`` to a few metres so each turn
-also moves the aircraft slightly along the new heading.
+Each move is a waypoint some metres ahead in the direction of the held keys
+(relative to the *desired heading*), at the requested altitude, with a POI
+500 m away along the desired heading, so the nose holds the desired heading the
+whole time and yaw keys turn it.  A new route is sent when the input changes, or
+while it is held and the aircraft gets near the waypoint.  Releasing every
+input, or none arriving for ``deadman`` seconds, stops the route and the
+aircraft hovers.  Moves start and stop gently (about 0.5 m/s^2).
 """
 
 from __future__ import annotations
@@ -41,7 +36,7 @@ from .mission import FinishAction, Heading, LostAction, Mission, Waypoint
 log = logging.getLogger(__name__)
 
 M_PER_DEG = 111_320.0
-ROUTE_TASK_MODE = 1
+ROUTE_TASK_MODE, FLY_TO_TASK_MODE = 1, 2
 
 
 def offset(lat: float, lon: float, north_m: float, east_m: float) -> tuple[float, float]:
@@ -53,6 +48,12 @@ def angle_diff(a: float, b: float) -> float:
     return (a - b + 180.0) % 360.0 - 180.0
 
 
+def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
+    dn = (b[0] - a[0]) * M_PER_DEG
+    de = (b[1] - a[1]) * M_PER_DEG * math.cos(math.radians(a[0]))
+    return math.hypot(dn, de)
+
+
 class ManualFlight:
     def __init__(
         self,
@@ -61,14 +62,12 @@ class ManualFlight:
         max_speed_ms: float = 5.0,
         max_climb_ms: float = 2.0,
         yaw_rate_dps: float = 30.0,
-        lookahead_s: float = 3.0,
-        min_carrot_m: float = 5.0,
+        lookahead_s: float = 5.0,
+        min_carrot_m: float = 8.0,
         min_alt_m: float = 3.0,
         max_alt_m: float = 120.0,
         poi_distance_m: float = 500.0,
-        yaw_creep_m: float = 0.0,
-        yaw_tolerance_deg: float = 5.0,
-        retarget_s: float = 1.0,
+        refresh_fraction: float = 0.4,
         deadman: float = 0.6,
         on_event: Callable[[str], None] | None = None,
     ) -> None:
@@ -81,9 +80,7 @@ class ManualFlight:
         self.min_alt_m = min_alt_m
         self.max_alt_m = max_alt_m
         self.poi_distance_m = poi_distance_m
-        self.yaw_creep_m = yaw_creep_m
-        self.yaw_tolerance_deg = yaw_tolerance_deg
-        self.retarget_s = retarget_s
+        self.refresh_fraction = refresh_fraction
         self.deadman = deadman
         self.say = on_event or (lambda msg: log.info(msg))
         self._input = (0.0, 0.0, 0.0, 0.0)  # forward, right, up, yaw in -1..1
@@ -92,15 +89,13 @@ class ManualFlight:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.heading: float | None = None  # desired heading, degrees
-        self.mode: str | None = None  # "fly_to" or "route" while moving
         self.moving = False
-        self._translating = False
-        self._turn_anchor: tuple[float, float] | None = None  # where a pure turn began
-        self._sent_input: tuple[float, float, float] | None = None
+        self._sent: tuple[float, float, float] | None = None
         self._sent_heading: float | None = None
-        self._sent_at = 0.0
+        self._target: tuple[float, float] | None = None
+        self._leg_m = 0.0
+        self._climbing = False  # last route changed altitude
 
-    # -- input --------------------------------------------------------------------
     def set(
         self, roll: float = 0.0, pitch: float = 0.0, throttle: float = 0.0, yaw: float = 0.0
     ) -> None:
@@ -119,11 +114,11 @@ class ManualFlight:
         """The heading that 'forward' refers to (the desired heading)."""
         return self.heading
 
-    # -- lifecycle ------------------------------------------------------------------
     def start(self) -> ManualFlight:
         sp = self.drone.state.sport
         self.heading = sp.yaw_deg if sp else 0.0
-        self.say(f"manual flight: forward = {self.heading:.0f} deg")
+        self._sent_heading = self.heading
+        self.say(f"manual flight: heading {self.heading:.0f} deg")
         if self._thread is None:
             self._stop.clear()
             self._thread = threading.Thread(target=self._run, name="openfimi-manual", daemon=True)
@@ -131,7 +126,7 @@ class ManualFlight:
         return self
 
     def stop(self, halt: bool = True) -> None:
-        """Stop manual flight.  ``halt`` cancels a move in progress (hover); pass
+        """Stop manual flight.  ``halt`` ends the move in progress (hover); pass
         ``halt=False`` when another command (land, return home) is about to take
         over, so nothing is sent that could interfere with it."""
         self._stop.set()
@@ -148,78 +143,44 @@ class ManualFlight:
     def __exit__(self, *exc) -> None:
         self.stop()
 
-    # -- helpers ----------------------------------------------------------------------
+    def _end_current(self) -> None:
+        """End whatever autopilot task is running, so a new route is accepted."""
+        nav = self.drone.state.navigation
+        mode = nav.task_mode if nav else None
+        if mode == ROUTE_TASK_MODE:
+            self.drone.send(commands.mission_stop(), timeout=3)
+        elif mode == FLY_TO_TASK_MODE:
+            # Also after arrival: the aircraft refused route uploads (41) for
+            # ~1.6 s after a fly-to arrived until it was exited.
+            self.drone.send(commands.fly_to_exit(), timeout=3)
+
     def _halt(self) -> None:
-        cmd = commands.mission_stop() if self.mode == "route" else commands.fly_to_exit()
         try:
-            self.drone.send(cmd, timeout=3)
+            self._end_current()
         except Exception as e:  # noqa: BLE001 - keep going; the pilot has the RC
             self.say(f"stop failed: {e}")
         self.moving = False
-        self.mode = None
-        self._sent_input = None
-        self._turn_anchor = None
+        self._sent = None
+        self._target = None
         self.say("manual: holding position")
 
-    def _yaw_error(self) -> float:
-        sp = self.drone.state.sport
-        if sp is None or self.heading is None:
-            return 0.0
-        return angle_diff(self.heading, sp.yaw_deg)
-
-    def _target(self, inp: tuple[float, float, float]):
+    def _send_route(self, move: tuple[float, float, float]) -> bool:
         s = self.drone.state.sport
-        fwd, right, up = inp
-        h = math.hypot(fwd, right)
-        speed = max(1.0, min(1.0, h) * self.max_speed_ms) if h > 0 else 1.0
+        fwd, right, up = move
+        hn = math.hypot(fwd, right)
+        h = min(1.0, hn)
+        speed = max(1.0, h * self.max_speed_ms)
         yaw = math.radians(self.heading or 0.0)
-        if h > 0:
+        if hn > 0:
             dist = max(self.min_carrot_m, speed * self.lookahead_s)
-            f, r = fwd / h * dist, right / h * dist
+            f, r = fwd / hn * dist, right / hn * dist
         else:
-            f, r = 0.0, 0.0
+            dist, f, r = 0.0, 0.0, 0.0
         north = f * math.cos(yaw) - r * math.sin(yaw)
         east = f * math.sin(yaw) + r * math.cos(yaw)
         lat, lon = offset(s.lat, s.lon, north, east)
         alt = s.height_m + up * self.max_climb_ms * self.lookahead_s
         alt = max(self.min_alt_m, min(self.max_alt_m, alt))
-        return lat, lon, alt, speed, h > 0
-
-    def _check(self, reply, what: str) -> bool:
-        if reply is not None and not reply.ok:
-            self.say(f"{what} refused (code {reply.code})")
-            return False
-        return True
-
-    def _go_fly_to(self, inp) -> bool:
-        lat, lon, alt, speed, translating = self._target(inp)
-        if self.mode == "route":
-            self.drone.send(commands.mission_stop(), timeout=3)
-        if not self._check(
-            self.drone.send(commands.fly_to(lat, lon, alt, speed), timeout=3), "fly-to target"
-        ):
-            return False
-        if not self._check(self.drone.send(commands.fly_to_start(), timeout=3), "fly-to start"):
-            return False
-        self.mode = "fly_to"
-        self._translating = translating
-        return True
-
-    def _go_route(self, inp) -> bool:
-        lat, lon, alt, speed, translating = self._target(inp)
-        s = self.drone.state.sport
-        yaw = math.radians(self.heading or 0.0)
-        if not translating and self.yaw_creep_m > 0:
-            # Creep from where the turn began, so re-sends don't add up.
-            if self._turn_anchor is None:
-                self._turn_anchor = (s.lat, s.lon)
-            a_lat, a_lon = self._turn_anchor
-            lat, lon = offset(
-                a_lat, a_lon, self.yaw_creep_m * math.cos(yaw), self.yaw_creep_m * math.sin(yaw)
-            )
-            translating = True
-        elif translating:
-            self._turn_anchor = None
         plat, plon = offset(
             s.lat, s.lon, self.poi_distance_m * math.cos(yaw), self.poi_distance_m * math.sin(yaw)
         )
@@ -230,29 +191,28 @@ class ManualFlight:
             finish=FinishAction.HOVER,
             rc_lost=LostAction.CONTINUE,
         )
-        nav = self.drone.state.navigation
-        if nav is not None and nav.task_mode == ROUTE_TASK_MODE:
-            self.drone.send(commands.mission_stop(), timeout=3)
-        elif self.mode == "fly_to" and self.moving:
-            self.drone.send(commands.fly_to_exit(), timeout=3)
+        self._end_current()
         try:
             self.drone.upload_mission(m, check=True)
         except Exception as e:  # noqa: BLE001 - e.g. CommandRejected
-            self.say(f"turn: route upload refused ({e})")
+            self.say(f"manual: route refused ({e})")
             return False
-        if not self._check(self.drone.start_mission(timeout=3), "turn: route start"):
+        r = self.drone.start_mission(timeout=3)
+        if r is not None and not r.ok:
+            self.say(f"manual: route start refused (code {r.code})")
             return False
-        self.mode = "route"
-        self._translating = translating
+        self._target = (lat, lon)
+        self._leg_m = dist
+        self._climbing = abs(up) >= 0.05
         return True
 
-    # -- control loop -----------------------------------------------------------------
     def _run(self) -> None:
         last = time.monotonic()
         while not self._stop.wait(0.2):
             now = time.monotonic()
             dt, last = now - last, now
-            if self.drone.state.sport is None:
+            s = self.drone.state.sport
+            if s is None:
                 continue
             with self._lock:
                 inp = self._input
@@ -260,40 +220,36 @@ class ManualFlight:
                     inp = (0.0, 0.0, 0.0, 0.0)
             fwd, right, up, yaw_in = inp
             if abs(yaw_in) >= 0.05:
-                self.heading = (self.heading + yaw_in * self.yaw_rate_dps * dt) % 360.0
-                if self.heading > 180.0:
-                    self.heading -= 360.0
-            move = (fwd, right, up)
-            idle = all(abs(v) < 0.05 for v in inp)
-            turning = abs(self._yaw_error()) > self.yaw_tolerance_deg
-            try:
-                if idle:
-                    # A pure turn (route to the current position) finishes on its
-                    # own; anything travelling is cancelled to hover.
-                    if self.moving and (self._translating or self.mode == "fly_to"):
-                        self._halt()
-                    elif self.moving and not turning:
-                        self.moving, self.mode = False, None
-                    continue
-                if all(abs(v) < 0.05 for v in move) and not turning:
-                    continue  # yaw held but already facing the desired heading
-                changed = (
-                    self._sent_input is None
-                    or any(abs(a - b) > 0.2 for a, b in zip(move, self._sent_input, strict=True))
-                    or (
-                        self._sent_heading is not None
-                        and abs(angle_diff(self.heading, self._sent_heading)) > 10.0
-                    )
+                self.heading = angle_diff(
+                    (self.heading or 0.0) + yaw_in * self.yaw_rate_dps * dt, 0
                 )
-                if not (changed or now - self._sent_at > self.retarget_s):
+            move = (fwd, right, up)
+            moving_keys = any(abs(v) >= 0.05 for v in move)
+            turned = abs(angle_diff(self.heading, self._sent_heading or 0.0)) > 5.0
+            try:
+                if not moving_keys and abs(yaw_in) < 0.05 and not turned:
+                    # Released: stop any travel.  A finished pure turn needs nothing.
+                    if self.moving and (self._leg_m > 0 or self._climbing):
+                        self._halt()
+                    else:
+                        self.moving = False
                     continue
-                ok = self._go_route(move) if turning else self._go_fly_to(move)
-                if ok:
+                changed = self._sent is None or any(
+                    abs(a - b) > 0.2 for a, b in zip(move, self._sent, strict=True)
+                )
+                near = (
+                    self._target is not None
+                    and self._leg_m > 0
+                    and moving_keys
+                    and _dist((s.lat, s.lon), self._target) < self.refresh_fraction * self._leg_m
+                )
+                if not (changed or turned or near):
+                    continue
+                if self._send_route(move):
                     if not self.moving:
-                        self.say("manual: moving" if not turning else "manual: turning")
+                        self.say("manual: moving" if moving_keys else "manual: turning")
                     self.moving = True
-                    self._sent_input = move
+                    self._sent = move
                     self._sent_heading = self.heading
-                    self._sent_at = now
             except Exception as e:  # noqa: BLE001 - e.g. ack timeout; try again next tick
                 self.say(f"manual: {e}")
