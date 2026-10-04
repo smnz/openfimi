@@ -411,6 +411,12 @@ class Drone:
                 self.send(commands.land())
             raise RuntimeError(msg)
 
+        if wait_ready > 0 and (s.heart is None or s.sport is None):
+            # The aircraft may not even be switched on yet: wait for it.
+            say("waiting for the aircraft to power on")
+            if not self.wait_until(lambda st: st.heart and st.sport, wait_ready):
+                raise PreflightError(f"no aircraft telemetry after {wait_ready:.0f} s")
+            say("aircraft telemetry received")
         if s.heart is None or s.sport is None:
             raise PreflightError("no telemetry")
         if not s.flying:
