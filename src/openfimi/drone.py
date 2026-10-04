@@ -15,6 +15,7 @@ import logging
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
@@ -263,25 +264,120 @@ class Drone:
 
     def preflight(self, min_battery: int = 30, min_satellites: int = 10) -> list[str]:
         """Reasons the aircraft should not take off now (empty list = ready)."""
+        return [msg for msg, _ in self._preflight(min_battery, min_satellites)]
+
+    def _preflight(self, min_battery: int, min_satellites: int) -> list[tuple[str, bool]]:
+        """(problem, waitable) pairs; waitable problems can clear by themselves."""
         s = self.state
-        problems = []
         if not (s.heart and s.battery and s.signal and s.errors):
-            return ["telemetry incomplete"]
-        if s.heart.takeoff_block:
-            problems.append(f"aircraft refuses take-off (code {s.heart.takeoff_block})")
+            return [("telemetry incomplete", True)]
+        problems = []
         if s.errors.sensor_overheat:
-            problems.append("sensor temperature too high: power off and cool down")
+            problems.append(("sensor temperature too high: power off and cool down", False))
         if s.battery.percent < min_battery:
-            problems.append(f"battery {s.battery.percent}% < {min_battery}%")
+            problems.append((f"battery {s.battery.percent}% < {min_battery}%", False))
         if s.signal.satellites < min_satellites:
-            problems.append(f"only {s.signal.satellites} satellites")
+            problems.append((f"{s.signal.satellites}/{min_satellites} satellites", True))
+        if s.home is None or (s.home.lat == 0 and s.home.lon == 0):
+            problems.append(("no home point yet", True))
+        if s.heart.takeoff_block:
+            problems.append((f"aircraft refuses take-off (code {s.heart.takeoff_block})", True))
         return problems
+
+    def wait_until_ready(
+        self,
+        timeout: float = 600.0,
+        *,
+        min_satellites: int = 10,
+        min_battery: int = 30,
+        settle_s: float = 5.0,
+        level_deg: float = 8.0,
+        on_event: Callable[[str], None] | None = None,
+    ) -> None:
+        """Wait until the pre-flight checks pass and the aircraft has settled.
+
+        Keeps waiting while the only problems are ones that clear by themselves
+        (satellites, home point, a take-off block code, not yet settled); raises
+        PreflightError at once for ones that do not (overheat, low battery) and
+        on timeout.
+
+        *Settled* (``settle_s`` > 0): for the last ``settle_s`` seconds the
+        aircraft has been level (roll and pitch within ``level_deg``), still
+        (roll/pitch varying < 1 deg, yaw < 2 deg, height < 0.3 m) and not moving
+        (GPS ground speed < 0.3 m/s).  Being carried breaks all of these, so a
+        drone switched on while walking to the launch spot is not launched
+        until it has been put down.
+        """
+        say = on_event or (lambda msg: log.info(msg))
+        end = time.monotonic() + timeout
+        last = None
+        samples: deque = deque()
+        while True:
+            problems = self._preflight(min_battery, min_satellites)
+            sp = self.state.sport
+            if settle_s > 0 and sp is not None:
+                now = time.monotonic()
+                samples.append(
+                    (now, sp.roll_deg, sp.pitch_deg, sp.yaw_deg, sp.height_m, sp.ground_speed_ms)
+                )
+                while samples and now - samples[0][0] > settle_s:
+                    samples.popleft()
+                why = self._unsettled(samples, settle_s, level_deg)
+                if why:
+                    problems.append((why, True))
+            if not problems:
+                s = self.state
+                say(
+                    f"ready: {s.signal.satellites} satellites, home point set, "
+                    f"battery {s.battery.percent}% {s.battery.temperature_c:.0f} C"
+                    + (", settled" if settle_s > 0 else "")
+                )
+                return
+            hard = [msg for msg, waitable in problems if not waitable]
+            if hard:
+                raise PreflightError("; ".join(hard))
+            text = "; ".join(msg for msg, _ in problems)
+            if text != last:
+                say(f"waiting: {text}")
+                last = text
+            if time.monotonic() > end:
+                raise PreflightError(f"not ready after {timeout:.0f} s: {text}")
+            time.sleep(0.2)
+
+    @staticmethod
+    def _unsettled(samples, settle_s: float, level_deg: float) -> str | None:
+        if not samples:
+            return "not settled (no attitude yet)"
+        t, roll, pitch, yaw, h, gs = samples[-1]
+        if abs(roll) > level_deg or abs(pitch) > level_deg:
+            return f"not level (roll {roll:.0f}, pitch {pitch:.0f})"
+        if gs >= 0.3:
+            return f"moving ({gs:.1f} m/s)"
+
+        def spread(i):
+            vals = [x[i] for x in samples]
+            return max(vals) - min(vals)
+
+        def yaw_spread():
+            ys = [x[3] for x in samples]
+            ref = ys[0]
+            d = [((y - ref + 180) % 360) - 180 for y in ys]
+            return max(d) - min(d)
+
+        if spread(1) >= 1.0 or spread(2) >= 1.0 or yaw_spread() >= 2.0 or spread(4) >= 0.3:
+            return "not settled (being moved)"
+        if t - samples[0][0] < settle_s - 0.3:
+            return f"settling ({t - samples[0][0]:.0f}/{settle_s:.0f} s)"
+        return None
 
     def fly_route(
         self,
         mission: Mission,
         *,
         takeoff: bool = True,
+        wait_ready: float = 0.0,
+        min_satellites: int = 10,
+        settle_s: float = 5.0,
         follow_gimbal: bool | None = None,
         gimbal_lead_s: float = 15.0,
         wait: bool = True,
@@ -290,7 +386,9 @@ class Drone:
     ) -> dict:
         """Fly a route end to end, the way the flight tests did it.
 
-        Take off if on the ground (after :meth:`preflight`), upload the route in
+        Take off if on the ground (after the pre-flight checks; with
+        ``wait_ready`` seconds, first wait for GPS / home point / take-off
+        clearance as in :meth:`wait_until_ready`), upload the route in
         the air, read it back and compare, start it, and (with ``wait``) monitor
         until it ends, landed if its finish action is return home.  Any failure
         before the route starts lands the aircraft if this call launched it.
@@ -318,7 +416,11 @@ class Drone:
         if not s.flying:
             if not takeoff:
                 raise PreflightError("aircraft is on the ground and takeoff=False")
-            problems = self.preflight()
+            if wait_ready > 0:
+                self.wait_until_ready(
+                    wait_ready, min_satellites=min_satellites, settle_s=settle_s, on_event=say
+                )
+            problems = self.preflight(min_satellites=min_satellites)
             if problems:
                 raise PreflightError("; ".join(problems))
             r = self.takeoff(timeout=5)

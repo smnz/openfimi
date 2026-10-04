@@ -46,6 +46,9 @@ class SimAircraft:
         self.gimbal_pitch = 0.0
         self.gimbal_log: list[float] = []
         self.battery = 100.0
+        self.satellites = 18
+        self.carried = False  # jiggle the attitude/position as if hand-carried
+        self.home_set = True
         self.waypoints: dict[int, bytes] = {}
         self.actions: dict[int, bytes] = {}
         self.route: list[tuple[float, float, float]] = []
@@ -255,6 +258,9 @@ class SimAircraft:
             (self.lon - self.home[1]) * M_PER_DEG * math.cos(math.radians(self.lat)),
         )
         moving = self.target is not None and time.monotonic() >= self.dwell_until
+        jig = math.sin(time.monotonic() * 7) if self.carried else 0.0
+        roll, pitch = 12 * jig, 6 * jig
+        walk = 130 if self.carried else 0
         self._send(
             fc,
             hdr(12, 2)
@@ -263,18 +269,18 @@ class SimAircraft:
                 self.lon,
                 self.lat,
                 self.alt,
-                int(self.speed * 100) if moving else 0,
+                int(self.speed * 100) if moving else walk,
                 0,
-                0,
-                0,
-                int(self.yaw * 10),
+                int(roll * 10),
+                int(pitch * 10),
+                int((self.yaw + 20 * jig) * 10),
                 0,
                 0,
                 home_d,
                 0,
             ),
         )
-        self._send(fc, hdr(12, 3) + bytes((18, 8, 10, 0, 12, 0, 100, 10)))
+        self._send(fc, hdr(12, 3) + bytes((self.satellites, 8, 10, 0, 12, 0, 100, 10)))
         self._send(fc, hdr(12, 4) + bytes(16))  # no faults
         cell = int((3.5 + 0.7 * self.battery / 100 - 2.0) * 100)
         self._send(
@@ -286,7 +292,10 @@ class SimAircraft:
             + struct.pack("<hhh", 0, 0, 12),
         )
         self._send(
-            fc, hdr(12, 6) + struct.pack("<ddf", self.home[1], self.home[0], 0.0) + bytes((1, 0, 1))
+            fc,
+            hdr(12, 6)
+            + (struct.pack("<ddf", self.home[1], self.home[0], 0.0) if self.home_set else bytes(20))
+            + bytes((1, 0, 1)),
         )
         wp = self.reached if self.activity == "route" else 0
         self._send(

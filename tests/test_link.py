@@ -155,3 +155,66 @@ def test_fly_to_sets_target_then_starts(rig):
     lat0, lon0 = rig.sim.home
     assert d.fly_to(lat0 + 0.0002, lon0, 30, speed_ms=10).ok
     assert d.wait_until(lambda s: s.sport.height_m > 25 and s.sport.home_distance_m > 15, 15)
+
+
+def test_wait_until_ready_waits_for_gps_and_home(rig):
+    from openfimi.drone import PreflightError
+
+    rig.sim.satellites, rig.sim.home_set = 4, False
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    d.wait_until(
+        lambda s: s.battery and s.errors and s.signal.satellites == 4 and s.home.lat == 0, 5
+    )
+    assert "4/10 satellites" in d.preflight()
+    with pytest.raises(PreflightError, match="not ready after"):
+        d.wait_until_ready(1.5, settle_s=0.5)
+
+    def improve():
+        time.sleep(0.8)
+        rig.sim.satellites = 12
+        time.sleep(0.5)
+        rig.sim.home_set = True
+
+    threading.Thread(target=improve, daemon=True).start()
+    events = []
+    d.wait_until_ready(10, settle_s=0.5, on_event=events.append)
+    assert events[-1].startswith("ready: 12 satellites"), events
+    # a stricter fix keeps waiting
+    with pytest.raises(PreflightError, match="12/16 satellites"):
+        d.wait_until_ready(1.5, min_satellites=16, settle_s=0.5)
+
+
+def test_wait_until_ready_fails_fast_on_overheat(rig):
+    from openfimi.drone import PreflightError
+
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    d.wait_until(lambda s: s.errors, 3)
+    d.state.errors.a |= 1 << 17  # as the real aircraft reported when too hot
+    t0 = time.monotonic()
+    with pytest.raises(PreflightError, match="temperature"):
+        d.wait_until_ready(30)
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_wait_until_ready_requires_settled_on_ground(rig):
+    from openfimi.drone import PreflightError
+
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    d.wait_until(lambda s: s.battery and s.signal and s.errors and s.home, 3)
+    rig.sim.carried = True  # switched on while walking to the launch spot
+    events = []
+    with pytest.raises(PreflightError, match="not level|moving|being moved"):
+        d.wait_until_ready(1.5, settle_s=1.0, on_event=events.append)
+
+    def put_down():
+        time.sleep(0.5)
+        rig.sim.carried = False
+
+    threading.Thread(target=put_down, daemon=True).start()
+    t0 = time.monotonic()
+    d.wait_until_ready(10, settle_s=1.0, on_event=events.append)
+    assert time.monotonic() - t0 >= 1.4  # 0.5 s carried + 1 s settling
+    assert events[-1].endswith("settled"), events

@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from . import commands, telemetry
-from .drone import Drone
+from .drone import Drone, PreflightError
 from .framing import InnerDecoder, OuterDecoder, StreamType
 from .link import AckTimeout
 from .mission import mission_from_dict
@@ -147,6 +147,32 @@ def _print_reply(r, cmd=None) -> None:
         )
 
 
+def _say(msg: str) -> None:
+    print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+
+def _wait_args(sp) -> None:
+    sp.add_argument(
+        "--wait-gps",
+        type=float,
+        nargs="?",
+        const=600.0,
+        metavar="SECONDS",
+        help="wait (default up to 600 s) for GPS, home point and take-off clearance",
+    )
+    sp.add_argument(
+        "--min-sats", type=int, default=10, help="satellites required before take-off (default 10)"
+    )
+    sp.add_argument(
+        "--settle",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="with --wait-gps: require the aircraft level and still on the ground this long "
+        "(default 5; 0 = off)",
+    )
+
+
 def cmd_send(args) -> int:
     if args.action == "gimbal":
         if args.value is None:
@@ -162,6 +188,13 @@ def cmd_send(args) -> int:
         cmd = build()
     with Drone(_transport(args), init_camera=False) as d:
         d.wait_for_telemetry(args.wait)
+        if args.action == "takeoff" and args.wait_gps is not None:
+            try:
+                d.wait_until_ready(
+                    args.wait_gps, min_satellites=args.min_sats, settle_s=args.settle, on_event=_say
+                )
+            except PreflightError as e:
+                sys.exit(f"not ready: {e}")
         try:
             r = d.send(cmd)
         except AckTimeout as e:
@@ -221,16 +254,24 @@ def cmd_mission(args) -> int:
                 f"gimbal: {', '.join(gim) if gim and args.gimbal != 'off' else 'untouched'}"
             )
             d.wait_until(lambda s: s.battery and s.signal and s.errors, 5)
-            problems = d.preflight()
+            problems = d.preflight(min_satellites=args.min_sats)
             if problems and not d.state.flying:
-                sys.exit("not ready: " + "; ".join(problems))
+                if args.wait_gps is None:
+                    sys.exit("not ready: " + "; ".join(problems))
+                print("not ready yet (will wait): " + "; ".join(problems))
             _confirm(args, f"FLY THE {len(m.waypoints)}-WAYPOINT ROUTE")
-            res = d.fly_route(
-                m,
-                follow_gimbal=False if args.gimbal == "off" else None,
-                gimbal_lead_s=args.lead,
-                on_event=lambda e: print(f"{time.strftime('%H:%M:%S')} {e}", flush=True),
-            )
+            try:
+                res = d.fly_route(
+                    m,
+                    wait_ready=args.wait_gps or 0.0,
+                    min_satellites=args.min_sats,
+                    settle_s=args.settle,
+                    follow_gimbal=False if args.gimbal == "off" else None,
+                    gimbal_lead_s=args.lead,
+                    on_event=_say,
+                )
+            except PreflightError as e:
+                sys.exit(f"not ready: {e}")
             print(res)
         elif args.op == "read":
             for p in d.read_mission():
@@ -339,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("action", choices=sorted([*_SIMPLE, "gimbal", "raw"]))
     sp.add_argument("value", nargs="?", help="gimbal: pitch deg; raw: MODULE:HEXPAYLOAD")
     sp.add_argument("-y", "--yes", action="store_true", help="skip the safety prompt")
+    _wait_args(sp)
     sp.set_defaults(fn=cmd_send)
 
     sp = sub.add_parser("mission", help="upload/read/start/stop a waypoint route")
@@ -373,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
         default=15.0,
         help="'before' mode: seconds before arrival (default 15)",
     )
+    _wait_args(sp)
     sp.add_argument("-y", "--yes", action="store_true")
     sp.set_defaults(fn=cmd_mission)
 
