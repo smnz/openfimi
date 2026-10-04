@@ -27,28 +27,51 @@ M_PER_DEG = 111_320.0
 
 
 class SimAircraft:
+    """Telemetry codes follow what the real aircraft sent in flight tests:
+    flightPhase 1 ground / 2 taking off / 3 flying / 4 landing; taskMode 4
+    take-off and hover, 2 fly-to, 1 route, 3 return home, 5 land; during a
+    route ``wpNUM`` counts the waypoints reached.
+    """
+
+    TAKEOFF_ALT = 2.5
+    RTH_ALT = 30.0
+
     def __init__(self, lat: float = -43.5321, lon: float = 172.6362, rate_hz: float = 5.0) -> None:
         self.home = (lat, lon)
         self.lat, self.lon, self.alt = lat, lon, 0.0
         self.yaw = 0.0
-        self.phase = 0  # 0 ground, 2 flying
+        self.activity = "ground"  # ground takeoff hover fly_to route rth land
         self.target: tuple[float, float, float] | None = None
         self.speed = 5.0
         self.gimbal_pitch = 0.0
+        self.gimbal_log: list[float] = []
         self.battery = 100.0
         self.waypoints: dict[int, bytes] = {}
         self.actions: dict[int, bytes] = {}
         self.route: list[tuple[float, float, float]] = []
+        self.route_i = 0
+        self.reached = 0
+        self.dwell_until = 0.0
         self.task_mode = 0
-        self.wp_index = 0
+        self.ap_status = 0
+        self.photos: list[tuple[int, float]] = []  # (waypoint, gimbal pitch) per photo
         self.sticks = (512, 512, 512, 512)
         self.sticks_at = 0.0
         self.rate_hz = rate_hz
         self.out = None  # callable(bytes) that delivers to the ground station
         self._seq = 0
+        self._fly_to = None
         self._outer, self._inner = OuterDecoder(), InnerDecoder()
         self._lock = threading.Lock()
         self.log: list[str] = []
+
+    @property
+    def phase(self) -> int:
+        return {"ground": 1, "takeoff": 2, "land": 4}.get(self.activity, 3)
+
+    @property
+    def flying(self) -> bool:
+        return self.activity != "ground"
 
     # -- wire helpers --------------------------------------------------------------
     def _send(self, src: int, payload: bytes, seq: int | None = None) -> None:
@@ -71,6 +94,14 @@ class SimAircraft:
                 with self._lock:
                     self._handle(f)
 
+    def _go(self, activity: str, target, task_mode: int, ap_status: int = 0) -> None:
+        self.activity, self.target, self.task_mode, self.ap_status = (
+            activity,
+            target,
+            task_mode,
+            ap_status,
+        )
+
     def _handle(self, f) -> None:
         key = (f.dst, f.group, f.msg_id)
         self.log.append(f"{f.group}/{f.msg_id}")
@@ -84,30 +115,36 @@ class SimAircraft:
         code = 0
         reply = b""
         if key == (Module.FC, 3, 16):
-            if self.phase == 0:
-                self.phase, self.target, self.task_mode = 2, (self.lat, self.lon, 1.2), 2
+            if self.activity == "ground":
+                self.speed = 1.0
+                self._go("takeoff", (self.lat, self.lon, self.TAKEOFF_ALT), 4)
             else:
                 code = 1
         elif key == (Module.FC, 3, 21):
-            if self.phase == 2:
-                self.target, self.task_mode = (self.lat, self.lon, 0.0), 3
+            if self.flying:
+                self._go("land", (self.lat, self.lon, 0.0), 5, 32)
+            else:
+                code = 22  # what the real aircraft answers on the ground
+        elif key == (Module.FC, 3, 26):
+            if self.flying:
+                self._rth(ap_status=2)
             else:
                 code = 1
-        elif key == (Module.FC, 3, 26):
-            self.target, self.task_mode = (*self.home, max(self.alt, 30.0)), 7
         elif key in (
             (Module.FC, 3, 19),
             (Module.FC, 3, 24),
             (Module.FC, 3, 29),
             (Module.FC, 3, 35),
+            (Module.FC, 3, 51),
         ):
-            self.target, self.route, self.task_mode = None, [], 0
+            if self.flying:
+                self._go("hover", None, 4)
         elif key == (Module.FC, 3, 36):
             self.waypoints[body[0]] = body
         elif key == (Module.FC, 3, 37):
             self.actions[body[0]] = body
         elif key == (Module.FC, 3, 32):
-            if not self.waypoints or self.phase != 2:
+            if not self.waypoints or not self.flying:
                 code = 1
             else:
                 self.route = []
@@ -115,8 +152,8 @@ class SimAircraft:
                     lon, lat, alt = struct.unpack_from("<ddh", self.waypoints[i], 4)
                     self.speed = max(0.5, self.waypoints[i][26] / 10)
                     self.route.append((lat, lon, alt / 10))
-                self.task_mode, self.wp_index = 6, 0
-                self.target = self.route[0]
+                self.route_i = self.reached = 0
+                self._go("route", self.route[0], 1)
         elif key == (Module.FC, 3, 38):
             wp = self.waypoints.get(body[0])
             if wp is None:
@@ -128,20 +165,25 @@ class SimAircraft:
             self.speed = max(0.5, body[20] / 10)
             self._fly_to = (lat, lon, alt / 10)
         elif key == (Module.FC, 3, 48):
-            target = getattr(self, "_fly_to", None)
-            if target is None or self.phase != 2:
+            if self._fly_to is None or not self.flying:
                 code = 30  # what the real aircraft answers without a target
             else:
-                self.target, self.task_mode = target, 4
+                self._go("fly_to", self._fly_to, 2)
         elif key == (Module.GIMBAL, 9, 6):
             self.gimbal_pitch = struct.unpack_from("<h", body, 9)[0] / 100
+            self.gimbal_log.append(self.gimbal_pitch)
         if f.flags & 1:
             self._ack(f, code, reply)
+
+    def _rth(self, ap_status: int) -> None:
+        self.speed = 5.0
+        self._go("rth", (self.lat, self.lon, max(self.alt, self.RTH_ALT)), 3, ap_status)
+        self._rth_stage = 0
 
     # -- physics and telemetry -----------------------------------------------------
     def step(self, dt: float) -> None:
         with self._lock:
-            if self.phase == 2 and time.monotonic() - self.sticks_at < 0.6:
+            if self.flying and time.monotonic() - self.sticks_at < 0.6:
                 r, p, t, y = ((v - 512) / 512 for v in self.sticks)
                 p, t = -p, -t  # the RC encodes forward and up as low values
                 self.yaw = (self.yaw + y * 60 * dt + 180) % 360 - 180
@@ -152,7 +194,7 @@ class SimAircraft:
                     M_PER_DEG * math.cos(math.radians(self.lat))
                 )
                 self.alt = max(0.0, self.alt + t * 3 * dt)
-            if self.target is not None:
+            if self.target is not None and time.monotonic() >= self.dwell_until:
                 tl, tn, ta = self.target
                 dn = (tl - self.lat) * M_PER_DEG
                 de = (tn - self.lon) * M_PER_DEG * math.cos(math.radians(self.lat))
@@ -167,21 +209,40 @@ class SimAircraft:
                 self.alt += max(-3 * dt, min(3 * dt, dz))
                 if dist <= 0.3 and abs(dz) < 0.1:
                     self._arrived()
-            self.battery = max(0.0, self.battery - (0.02 if self.phase == 2 else 0.001) * dt)
+            self.battery = max(0.0, self.battery - (0.02 if self.flying else 0.001) * dt)
             self._push()
 
     def _arrived(self) -> None:
-        if self.task_mode == 6 and self.wp_index + 1 < len(self.route):
-            self.wp_index += 1
-            self.target = self.route[self.wp_index]
-            return
-        if self.task_mode == 7:  # RTH: land at home
-            self.target, self.task_mode = (*self.home, 0.0), 3
-            return
-        if self.task_mode == 3 and self.alt <= 0.05:
-            self.phase, self.alt = 0, 0.0
-        self.target = None
-        self.task_mode = 0
+        a = self.activity
+        if a == "takeoff":
+            self._go("hover", None, 4)
+        elif a == "fly_to":
+            self._go("hover", None, 2)
+        elif a == "route":
+            i = self.route_i
+            self.reached = i + 1  # the real wpNUM ticks on arrival, before the action
+            act = self.actions.get(i)
+            if act is not None and act[4] in (1, 2):  # HOVER or PHOTO in the first slot
+                self.dwell_until = time.monotonic() + 1.0
+                if act[4] == 2 or act[5] == 2:
+                    self.photos.append((i, self.gimbal_pitch))
+            if i + 1 < len(self.route):
+                self.route_i = i + 1
+                self.target = self.route[self.route_i]
+            elif self.waypoints[i][34] == 4:  # finish action: return home
+                self._rth(ap_status=5)
+            else:  # hover at the last waypoint
+                self._go("hover", None, 4)
+        elif a == "rth":
+            if getattr(self, "_rth_stage", 0) == 0:
+                self._rth_stage = 1
+                self.target = (*self.home, self.alt)
+            else:
+                self.speed = 1.5
+                self._go("land", (*self.home, 0.0), 3, self.ap_status)
+        elif a == "land" and self.alt <= 0.05:
+            self.alt = 0.0
+            self.activity, self.target = "ground", None
 
     def _push(self) -> None:
         fc = Module.FC
@@ -193,6 +254,7 @@ class SimAircraft:
             (self.lat - self.home[0]) * M_PER_DEG,
             (self.lon - self.home[1]) * M_PER_DEG * math.cos(math.radians(self.lat)),
         )
+        moving = self.target is not None and time.monotonic() >= self.dwell_until
         self._send(
             fc,
             hdr(12, 2)
@@ -201,7 +263,7 @@ class SimAircraft:
                 self.lon,
                 self.lat,
                 self.alt,
-                int(self.speed * 10) if self.target else 0,
+                int(self.speed * 100) if moving else 0,
                 0,
                 0,
                 0,
@@ -213,6 +275,7 @@ class SimAircraft:
             ),
         )
         self._send(fc, hdr(12, 3) + bytes((18, 8, 10, 0, 12, 0, 100, 10)))
+        self._send(fc, hdr(12, 4) + bytes(16))  # no faults
         cell = int((3.5 + 0.7 * self.battery / 100 - 2.0) * 100)
         self._send(
             fc,
@@ -225,11 +288,10 @@ class SimAircraft:
         self._send(
             fc, hdr(12, 6) + struct.pack("<ddf", self.home[1], self.home[0], 0.0) + bytes((1, 0, 1))
         )
+        wp = self.reached if self.activity == "route" else 0
         self._send(
             fc,
-            hdr(3, 1)
-            + bytes((self.task_mode, 1 if self.target else 0, 0))
-            + struct.pack("<H", self.wp_index),
+            hdr(3, 1) + bytes((self.task_mode, 2, self.ap_status)) + struct.pack("<H", wp),
         )
         self._send(
             Module.GIMBAL,

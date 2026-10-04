@@ -29,6 +29,10 @@ from .video import VideoPacket
 log = logging.getLogger(__name__)
 
 
+class PreflightError(RuntimeError):
+    """The aircraft is not ready to fly; the message says why."""
+
+
 class CommandRejected(RuntimeError):
     def __init__(self, reply: Reply):
         super().__init__(f"{reply.command.name} rejected with code {reply.code}")
@@ -256,6 +260,150 @@ class Drone:
             if r is not None and isinstance(r.message, telemetry.AiLinePoint):
                 pts.append(r.message)
         return pts
+
+    def preflight(self, min_battery: int = 30, min_satellites: int = 10) -> list[str]:
+        """Reasons the aircraft should not take off now (empty list = ready)."""
+        s = self.state
+        problems = []
+        if not (s.heart and s.battery and s.signal and s.errors):
+            return ["telemetry incomplete"]
+        if s.heart.takeoff_block:
+            problems.append(f"aircraft refuses take-off (code {s.heart.takeoff_block})")
+        if s.errors.sensor_overheat:
+            problems.append("sensor temperature too high: power off and cool down")
+        if s.battery.percent < min_battery:
+            problems.append(f"battery {s.battery.percent}% < {min_battery}%")
+        if s.signal.satellites < min_satellites:
+            problems.append(f"only {s.signal.satellites} satellites")
+        return problems
+
+    def fly_route(
+        self,
+        mission: Mission,
+        *,
+        takeoff: bool = True,
+        follow_gimbal: bool | None = None,
+        gimbal_mode: str = "step",
+        wait: bool = True,
+        timeout: float = 1800.0,
+        on_event: Callable[[str], None] | None = None,
+    ) -> dict:
+        """Fly a route end to end, the way the flight tests did it.
+
+        Take off if on the ground (after :meth:`preflight`), upload the route in
+        the air, read it back and compare, start it, and (with ``wait``) monitor
+        until it ends, landed if its finish action is return home.  Any failure
+        before the route starts lands the aircraft if this call launched it.
+
+        ``follow_gimbal`` drives the per-waypoint gimbal pitch the aircraft
+        itself ignores (see :mod:`openfimi.follow`); by default it is on when any
+        waypoint has a non-zero pitch.
+        """
+        from .follow import GimbalFollower, ground_distance
+
+        say = on_event or (lambda msg: log.info(msg))
+        mission.validate()
+        s = self.state
+        launched = False
+
+        def bail(msg: str):
+            say(f"ABORT: {msg}")
+            if launched:
+                say("landing")
+                self.send(commands.land())
+            raise RuntimeError(msg)
+
+        if s.heart is None or s.sport is None:
+            raise PreflightError("no telemetry")
+        if not s.flying:
+            if not takeoff:
+                raise PreflightError("aircraft is on the ground and takeoff=False")
+            problems = self.preflight()
+            if problems:
+                raise PreflightError("; ".join(problems))
+            r = self.takeoff(timeout=5)
+            if r is None or not r.ok:
+                raise PreflightError(f"take-off refused (code {r.code if r else '?'})")
+            launched = True
+            say("taking off")
+            if not self.wait_until(
+                lambda st: st.heart.flight_phase == 3 and st.sport.height_m > 2, 30
+            ):
+                bail("did not reach a hover")
+        try:
+            self.upload_mission(
+                mission,
+                check=True,
+                progress=lambda i, n: say(f"uploaded {i}/{n}") if i == n else None,
+            )
+            pts = self.read_mission(len(mission.waypoints))
+        except Exception as e:  # noqa: BLE001 - land on any upload failure
+            bail(f"upload failed: {e}")
+        bad = [
+            i
+            for i, (p, w) in enumerate(zip(pts, mission.waypoints, strict=False))
+            if abs(p.lat - w.lat) > 1e-7
+            or abs(p.lon - w.lon) > 1e-7
+            or abs(p.alt_m - w.alt_m) > 0.15
+        ]
+        if len(pts) != len(mission.waypoints) or bad:
+            bail(f"read-back mismatch at waypoints {bad or 'count'}")
+        say(f"route verified ({len(pts)} waypoints)")
+
+        follow = (
+            follow_gimbal
+            if follow_gimbal is not None
+            else any(w.gimbal_pitch_deg for w in mission.waypoints)
+        )
+        follower = GimbalFollower(self, mission, mode=gimbal_mode, on_event=say) if follow else None
+        if follower:
+            follower.start()
+        r = self.start_mission(timeout=5)
+        if r is None or not r.ok:
+            if follower:
+                follower.stop()
+            bail(f"route start refused (code {r.code if r else '?'})")
+        say("route started")
+        result = {"verified": True, "started": True, "gimbal_follow": follow}
+        if not wait:
+            result["follower"] = follower
+            return result
+
+        end = time.monotonic() + timeout
+        last_wp, seen_route = -1, False
+        try:
+            while time.monotonic() < end:
+                time.sleep(0.5)
+                st = self.state
+                nav = st.navigation
+                if nav and nav.task_mode == 1:
+                    seen_route = True
+                    if nav.waypoint != last_wp:
+                        last_wp = nav.waypoint
+                        if last_wp > 0:
+                            say(f"reached waypoint {last_wp - 1}")
+                elif seen_route and nav and nav.task_mode != 1:
+                    if last_wp < len(mission.waypoints):
+                        last_wp = len(mission.waypoints)
+                        say(f"reached waypoint {last_wp - 1} (route complete)")
+                    if int(mission.finish) != 4:
+                        say("route finished")
+                        break
+                    if st.heart.flight_phase == 1 and st.sport.height_m < 0.5:
+                        home = (
+                            ground_distance(
+                                (st.sport.lat, st.sport.lon), (st.home.lat, st.home.lon)
+                            )
+                            if st.home
+                            else float("nan")
+                        )
+                        say(f"landed {home:.1f} m from home")
+                        result["landed"] = True
+                        break
+        finally:
+            if follower:
+                follower.stop()
+        return result
 
     def start_mission(self, **kw) -> Reply | None:
         return self.send(commands.mission_start(), **kw)
