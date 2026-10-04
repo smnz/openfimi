@@ -102,6 +102,7 @@ class ManualFlight:
         self._target: tuple[float, float] | None = None
         self._leg_m = 0.0
         self._climbing = False  # last route changed altitude
+        self._started_at = 0.0
 
     def set(
         self, roll: float = 0.0, pitch: float = 0.0, throttle: float = 0.0, yaw: float = 0.0
@@ -125,6 +126,7 @@ class ManualFlight:
         sp = self.drone.state.sport
         self.heading = sp.yaw_deg if sp else 0.0
         self._sent_heading = self.heading
+        self._started_at = time.monotonic()
         self.say(f"manual flight: heading {self.heading:.0f} deg")
         if self._thread is None:
             self._stop.clear()
@@ -149,6 +151,12 @@ class ManualFlight:
 
     def __exit__(self, *exc) -> None:
         self.stop()
+
+    def _emergency(self) -> bool:
+        st = self.drone.state
+        notice = getattr(st, "notice", None)
+        at = getattr(st, "updated", {}).get("notice", 0.0)
+        return bool(notice and notice.get("event") == "emergency_rth" and at >= self._started_at)
 
     def _end_current(self) -> None:
         """End whatever autopilot task is running, so a new route is accepted."""
@@ -221,6 +229,12 @@ class ManualFlight:
             s = self.drone.state.sport
             if s is None:
                 continue
+            if self._emergency():
+                # The bridge's emergency return home (an operator override):
+                # stand down without sending anything that could cancel it.
+                self.say("manual: emergency return home from the bridge; stopping")
+                self.moving = False
+                return
             with self._lock:
                 inp = self._input
                 if now - self._updated > self.deadman:

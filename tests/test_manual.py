@@ -134,3 +134,19 @@ def test_release_stops_a_climb_and_first_move_after_fly_to_is_accepted():
         m.stop()
     finally:
         rig.close()
+
+
+def test_bridge_emergency_stops_manual_flight():
+    rig = flying_rig()
+    try:
+        d = rig.drone
+        events = []
+        m = ManualFlight(d, on_event=events.append).start()
+        d._on_notice({"event": "emergency_rth", "source": "bridge", "stage": "activated"})
+        n = len(rig.sim.log)
+        hold(m, 1.0, pitch=1.0)  # inputs after the emergency are ignored
+        assert any("emergency" in e for e in events), events
+        assert "3/32" not in rig.sim.log[n:]
+        m.stop(halt=False)
+    finally:
+        rig.close()
