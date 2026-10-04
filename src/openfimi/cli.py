@@ -95,8 +95,17 @@ def cmd_video(args) -> int:
                 else None
             )
             if sink is None:
-                fp = open(args.output, "wb")
-                d.on_video(lambda p: p.is_video and fp.write(p.data))
+                fp = sys.stdout.buffer if args.output == "-" else open(args.output, "wb")
+
+                def write(p, fp=fp):
+                    if p.is_video:
+                        try:
+                            fp.write(p.data)
+                            fp.flush()
+                        except BrokenPipeError:
+                            d.link.closed.set()  # the reader went away: stop
+
+                d.on_video(write)
         else:
             sink = FfmpegSink.ffplay(args.codec)
         if sink is not None:
@@ -261,7 +270,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("video", help="show or save the FPV stream")
     link_args(sp)
-    sp.add_argument("-o", "--output", help=".h265/.h264 raw, or .mp4/.mkv via ffmpeg")
+    sp.add_argument(
+        "-o", "--output", help="'-' for raw stream on stdout, .h265/.h264 raw file, or .mp4/.mkv"
+    )
     sp.add_argument("--codec", default="hevc", choices=["hevc", "h264"])
     sp.set_defaults(fn=cmd_video)
 
