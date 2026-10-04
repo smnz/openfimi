@@ -7,9 +7,10 @@ crashed controller (or a stalled AI loop) leaves the aircraft hovering rather
 than holding the last command.
 
 Inputs: +roll = right, +pitch = forward, +throttle = up, +yaw = clockwise.  The
-mapping to wire values was measured from a real RC; whether the aircraft obeys
-virtual sticks alongside the physical RC is not yet confirmed, so test with
-the propellers removed before flying.
+mapping to wire values was measured from a real RC.
+
+**Direct Wi-Fi link only:** through the RC the aircraft ignores virtual sticks
+(flight-tested).  Use :class:`openfimi.manual.ManualFlight` there instead.
 """
 
 from __future__ import annotations

@@ -26,7 +26,7 @@ scriptable, including by AI agents.
 > (October 2026). Working in real flight: telemetry, take-off, landing,
 > fly-to-point, return home, 7-waypoint routes with photo actions, the gimbal
 > follower, waiting for GPS and settling before launch, and FPV video.
-> **Virtual sticks are not yet tested in flight.** Read [Safety](#safety).
+> **Virtual sticks do not work through the remote** (flight-tested: the aircraft ignores them there; keyboard flying uses fly-to moves via `openfimi.manual`). Read [Safety](#safety).
 
 ## How it connects
 
@@ -138,12 +138,14 @@ for pkt in d.video_packets():
         img = frame.to_ndarray(format="bgr24")   # hand to your model
 ```
 
-Virtual sticks (not yet flight-tested), inputs from −1 to 1, which re-centre
-if you stop updating them for 0.6 s:
+Keyboard-style flying through the remote, as fly-to moves (the aircraft ignores
+virtual sticks over the remote's link; they only work over direct Wi-Fi). Inputs
+are −1 to 1, and releasing or 0.6 s without updates hovers. There's no yaw:
 
 ```python
-with d.sticks as s:
-    s.set(pitch=0.3)          # gentle forward
+from openfimi.manual import ManualFlight
+with ManualFlight(d) as m:
+    m.set(pitch=0.5)          # forward, in the heading at start
 ```
 
 Lower layers are public too: `Link` (sequence numbers, ACKs, retransmit),
@@ -177,8 +179,8 @@ openfimi video -u tcp://<phone-ip>              # watch live (sends nothing)
   home. Keep the RC in hand with a pilot ready to take over.
 * Hands-off launch (`--wait-gps -y`) takes off by itself. Keep clear of the
   drone once it's set down.
-* Virtual sticks are untested in flight. Test them on the ground with the
-  **propellers removed** first.
+* Keyboard flying (`ManualFlight`) is not yet flight-tested. Its moves are
+  autopilot legs that start and stop gently; keep the remote in hand.
 * Fly within your local regulations and keep line of sight. You are
   responsible for what your code makes the aircraft do.
 

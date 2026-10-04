@@ -256,8 +256,11 @@ def virtual_sticks(
     ========  =================  =================  ====================
 
     The fifth channel is unused (always 512); the sixth is the gimbal wheel.
-    Whether the aircraft obeys these frames while the physical RC is also
-    sending its sticks is UNCONFIRMED: test with the propellers removed.
+
+    **Only for the direct Wi-Fi link.** Sent through the RC, the aircraft ignores
+    these frames (flight-tested: no response to 318 frames); the FIMI app streams
+    them only when connected over Wi-Fi with no RC.  To fly from the ground
+    station through the RC, use :class:`openfimi.manual.ManualFlight`.
     """
     vals = [max(STICK_MIN, min(STICK_MAX, int(v))) for v in (roll, pitch, throttle, yaw)]
     p = bytes((11, 2, 0, 0)) + struct.pack("<4h", *vals)

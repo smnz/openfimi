@@ -308,6 +308,25 @@ so a gadget board on that port can run off the RC.
 between short flights for about an hour, it reached 47 °C battery, set the
 sensor-overheat fault and refused take-off until powered off and cooled.
 
+## 4k. Virtual sticks are ignored over the RC link; no power-off command
+
+* **The aircraft ignores virtual-stick frames (11/2, src RC → FC) sent through
+  the RC.** Flight test 2026-10-04: 318 frames with deflections on four axes
+  (up to full throttle, roll and pitch at ±40 %), held up to 2.7 s, while
+  hovering at 2.7 m. Height stayed within 0.1 m, yaw at exactly −81.0°,
+  ground speed ≤ 0.09 m/s, tilt ≤ 3°: identical to the quiet periods. The
+  physical sticks were centred throughout. This matches the app, which streams
+  virtual sticks only when connected over Wi-Fi directly to the aircraft
+  (`n6.a.f24477a` is set only by the "connect type Wi-Fi" event), i.e. with no
+  RC in the loop. Over the RC, stick input comes from the RC's own radio.
+  openfimi's `ManualFlight` (`openfimi.manual`) flies keyboard moves over the
+  RC link as fly-to targets instead.
+* **No power-off command.** Nothing in the app powers the aircraft (or
+  motors) off remotely. The alarm table has "the drone temperature is too
+  high; it will shut down soon", so the aircraft can shut itself down, but no
+  command for it is known. The FC firmware is encrypted, so an undocumented
+  opcode cannot be ruled out.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte
