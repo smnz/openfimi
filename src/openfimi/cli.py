@@ -210,7 +210,7 @@ def cmd_mission(args) -> int:
                 sys.exit("not ready: " + "; ".join(problems))
             _confirm(args, f"FLY THE {len(m.waypoints)}-WAYPOINT ROUTE")
             follow = None if args.gimbal == "auto" else args.gimbal != "off"
-            mode = args.gimbal if args.gimbal in ("step", "interpolate") else "step"
+            mode = args.gimbal if args.gimbal in ("lead", "step", "interpolate") else "lead"
             res = d.fly_route(
                 m,
                 follow_gimbal=follow,

@@ -283,7 +283,8 @@ class Drone:
         *,
         takeoff: bool = True,
         follow_gimbal: bool | None = None,
-        gimbal_mode: str = "step",
+        gimbal_mode: str = "lead",
+        gimbal_lead_s: float = 15.0,
         wait: bool = True,
         timeout: float = 1800.0,
         on_event: Callable[[str], None] | None = None,
@@ -355,7 +356,11 @@ class Drone:
             if follow_gimbal is not None
             else any(w.gimbal_pitch_deg for w in mission.waypoints)
         )
-        follower = GimbalFollower(self, mission, mode=gimbal_mode, on_event=say) if follow else None
+        follower = (
+            GimbalFollower(self, mission, mode=gimbal_mode, lead_s=gimbal_lead_s, on_event=say)
+            if follow
+            else None
+        )
         if follower:
             follower.start()
         r = self.start_mission(timeout=5)

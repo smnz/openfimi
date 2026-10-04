@@ -15,7 +15,14 @@ the leg, so the gimbal is already there when *k+1*'s photo is taken.
 
 Modes:
 
-* ``"step"``: hold each waypoint's pitch for the leg flying toward it.
+* ``"lead"`` (default): keep the previous waypoint's pitch along the leg and
+  switch to the next waypoint's pitch ``lead_s`` seconds (15) before the
+  estimated arrival.  The estimate is the remaining distance divided by the
+  planned leg speed, recomputed from the live position; because the aircraft
+  slows on the approach the real lead time is a little longer, never shorter.
+  Legs shorter than ``lead_s`` at planned speed fall back to ``"step"``.
+* ``"step"``: switch to the next waypoint's pitch as soon as the aircraft has
+  left the previous waypoint.
 * ``"interpolate"``: blend from the previous waypoint's pitch to the next one
   along the leg, by distance (smooth for video).
 """
@@ -52,14 +59,17 @@ class GimbalFollower:
         drone,
         mission: Mission,
         *,
-        mode: str = "step",
+        mode: str = "lead",
+        lead_s: float = 15.0,
         depart_radius_m: float = 3.0,
         min_change_deg: float = 1.0,
         verify_after_s: float = 1.5,
         on_event: Callable[[str], None] | None = None,
     ) -> None:
-        if mode not in ("step", "interpolate"):
-            raise ValueError("mode must be 'step' or 'interpolate'")
+        if mode not in ("lead", "step", "interpolate"):
+            raise ValueError("mode must be 'lead', 'step' or 'interpolate'")
+        self.lead_s = lead_s
+        self.speeds = [w.speed_ms or mission.speed_ms for w in mission.waypoints]
         self.drone = drone
         self.mission = mission
         self.mode = mode
@@ -90,9 +100,13 @@ class GimbalFollower:
         prev, nxt = reached - 1, reached
         if ground_distance(pos, self.points[prev]) < self.depart_radius_m:
             return self.pitches[prev]  # still at (or acting at) the waypoint just reached
-        if self.mode == "step":
-            return self.pitches[nxt]
         leg = ground_distance(self.points[prev], self.points[nxt])
+        speed = max(0.1, self.speeds[nxt])
+        if self.mode == "step" or (self.mode == "lead" and leg / speed < self.lead_s):
+            return self.pitches[nxt]
+        if self.mode == "lead":
+            eta = ground_distance(pos, self.points[nxt]) / speed
+            return self.pitches[nxt] if eta <= self.lead_s else self.pitches[prev]
         if leg < 1e-3:
             return self.pitches[nxt]
         f = 1.0 - ground_distance(pos, self.points[nxt]) / leg
