@@ -144,6 +144,7 @@ class Waypoint:
     gimbal_mode: GimbalMode = GimbalMode.NONE  # applied by openfimi.follow
     rotation: Rotation = Rotation.MIN_ANGLE
     # Per-point overrides of the route settings (None = use the route value).
+    # Flight-verified: a waypoint's speed is flown on the leg arriving AT it.
     speed_ms: float | None = None
     heading: Heading | None = None
 

@@ -265,6 +265,26 @@ frames (all ACKed), read back identical, then 3/32.
   (wp2: camera state 4 at 151.4 s, tick at 152.2 s; wp4: 215.7 s and 216.4 s).
   Anything triggered by the tick is too late for that waypoint's photo.
 
+## 4i. Per-waypoint speed and gimbal follower (2026-10-04)
+
+Route at 50 m with waypoint speeds 2.8 / 8.3 / 8.3 / 11 / 8.3 / 11 / 2.8 m/s
+(the route-level SPEED was 11 m/s and is never sent).
+
+* **A waypoint's speed byte sets the speed of the leg arriving *at* that
+  waypoint.** wp3 → wp4 (180 m) cruised at 8.16 m/s, wp4's 8.3 rather than
+  wp3's 11; wp5 → wp6 (93 m) cruised at 2.81 m/s, wp6's 2.8 rather than wp5's 11.
+  The FIMI app writes the route speed into every waypoint, which is why only
+  the route speed seems to matter there.
+* Acceleration and deceleration are gentle (about 0.5 m/s²): legs of 31–43 m
+  peaked at 3.6–4.6 m/s whatever their set speed, and the 180 m leg spent
+  about 16 s at each end changing speed.
+* **Gimbal follower, on arrival (wp2, photo):** photo at 176.4 s, wpNUM tick at
+  177.5 s, command at 177.6 s, gimbal at −89° by 178.1 s. The photo is taken
+  at the previous pitch, as predicted.
+* **Gimbal follower, before arrival (wp4, photo):** command at 210.4 s (a
+  straight-line ETA of 15 s at 8.3 m/s), −45.8° by 210.7 s, photo at 235.5 s:
+  25 s of real lead, because of the slow deceleration.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte

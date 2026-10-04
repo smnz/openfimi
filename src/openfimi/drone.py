@@ -490,7 +490,7 @@ class Drone:
                 nav = st.navigation
                 if nav and nav.task_mode == 1:
                     seen_route = True
-                    if nav.waypoint != last_wp:
+                    if nav.waypoint != last_wp and nav.waypoint != 0xFFFF:
                         last_wp = nav.waypoint
                         if last_wp > 0:
                             say(f"reached waypoint {last_wp - 1}")
