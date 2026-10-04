@@ -159,6 +159,14 @@ class SimAircraft:
                 # Real aircraft: wpNUM reads 65535 for a moment as the route starts.
                 self._sentinel_until = time.monotonic() + 0.5
                 self._go("route", self.route[0], 1)
+                # Free heading with a POI: face the POI (bearing from the live position).
+                first = self.waypoints[min(self.waypoints)]
+                self.poi = (
+                    (struct.unpack_from("<d", first, 44)[0], struct.unpack_from("<d", first, 36)[0])
+                    if first[30] & 1
+                    else None
+                )
+                self._face_poi()
         elif key == (Module.FC, 3, 38):
             wp = self.waypoints.get(body[0])
             if wp is None:
@@ -210,6 +218,7 @@ class SimAircraft:
                     self.lat += dn * k / M_PER_DEG
                     self.lon += de * k / (M_PER_DEG * math.cos(math.radians(self.lat)))
                     self.yaw = math.degrees(math.atan2(de, dn))
+                    self._face_poi()
                 dz = ta - self.alt
                 self.alt += max(-3 * dt, min(3 * dt, dz))
                 if dist <= 0.3 and abs(dz) < 0.1:
@@ -248,6 +257,14 @@ class SimAircraft:
         elif a == "land" and self.alt <= 0.05:
             self.alt = 0.0
             self.activity, self.target = "ground", None
+
+    def _face_poi(self) -> None:
+        poi = getattr(self, "poi", None)
+        if poi is None or self.activity != "route":
+            return
+        dn = (poi[0] - self.lat) * M_PER_DEG
+        de = (poi[1] - self.lon) * M_PER_DEG * math.cos(math.radians(self.lat))
+        self.yaw = math.degrees(math.atan2(de, dn))
 
     def _push(self) -> None:
         fc = Module.FC

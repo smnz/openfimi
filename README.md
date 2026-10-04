@@ -138,14 +138,17 @@ for pkt in d.video_packets():
         img = frame.to_ndarray(format="bgr24")   # hand to your model
 ```
 
-Keyboard-style flying through the remote, as fly-to moves (the aircraft ignores
-virtual sticks over the remote's link; they only work over direct Wi-Fi). Inputs
-are −1 to 1, and releasing or 0.6 s without updates hovers. There's no yaw:
+Keyboard-style flying through the remote, as autopilot moves (the aircraft
+ignores virtual sticks over the remote's link; they only work over direct Wi-Fi).
+Moves are fly-to targets relative to a desired heading; yaw turns that heading
+and is flown as a one-point route with a POI along it (Free heading). Inputs are
+−1 to 1, and releasing or 0.6 s without updates hovers:
 
 ```python
 from openfimi.manual import ManualFlight
 with ManualFlight(d) as m:
-    m.set(pitch=0.5)          # forward, in the heading at start
+    m.set(yaw=0.5)            # turn right
+    m.set(pitch=0.5)          # forward, along the new heading
 ```
 
 Lower layers are public too: `Link` (sequence numbers, ACKs, retransmit),
