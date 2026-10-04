@@ -126,7 +126,13 @@ class SimAircraft:
         elif key == (Module.FC, 3, 52):
             lon, lat, alt = struct.unpack_from("<ddh", body, 0)
             self.speed = max(0.5, body[20] / 10)
-            self.target, self.task_mode = (lat, lon, alt / 10), 4
+            self._fly_to = (lat, lon, alt / 10)
+        elif key == (Module.FC, 3, 48):
+            target = getattr(self, "_fly_to", None)
+            if target is None or self.phase != 2:
+                code = 30  # what the real aircraft answers without a target
+            else:
+                self.target, self.task_mode = target, 4
         elif key == (Module.GIMBAL, 9, 6):
             self.gimbal_pitch = struct.unpack_from("<h", body, 9)[0] / 100
         if f.flags & 1:

@@ -131,10 +131,12 @@ def mission_read_action(index: int) -> Command:
 
 
 def fly_to(lat: float, lon: float, alt_m: float, speed_ms: float) -> Command:
-    """Tap-to-fly / point-to-point GO (FC 3/52).
+    """Point-to-point flight, step 1: set the target (FC 3/52).
 
-    Altitude is sent in decimetres and speed in decimetres per second, exactly
-    as the app's caller scales them.  Wire order is longitude first.
+    The aircraft does not move until :func:`fly_to_start` (3/48) follows; the
+    app sends that only after this command is acknowledged, and 3/48 on its
+    own is refused with code 30 (seen in flight).  Altitude is decimetres and
+    speed decimetres per second on the wire; longitude comes first.
     """
     p = bytearray(25)
     p[0:2] = bytes((3, 52))
@@ -143,9 +145,9 @@ def fly_to(lat: float, lon: float, alt_m: float, speed_ms: float) -> Command:
     return _fc(bytes(p), "fly_to")
 
 
-def fly_to_confirm() -> Command:
-    """Arm/confirm tap-to-fly (FC 3/48), sent by the app before GO."""
-    return _fc([3, 48], "fly_to_confirm")
+def fly_to_start() -> Command:
+    """Point-to-point flight, step 2: go (FC 3/48), after :func:`fly_to`."""
+    return _fc([3, 48], "fly_to_start")
 
 
 def fly_to_exit() -> Command:

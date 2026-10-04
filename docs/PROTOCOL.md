@@ -98,7 +98,7 @@ Payloads, exact bytes and the full catalogue are in chapter 02.
 | Upload point action | FC 3/37 | 56 bytes |
 | Start / exit mission | FC 3/32, 3/35 | no proven pause/resume (3/33, 3/34 are unlabelled candidates) |
 | Read waypoint / action | FC 3/38, 3/39 | read back from the aircraft |
-| Point-to-point fly | FC 3/48 then 3/52 | lon, lat f64; alt dm i16; speed dm/s u8 |
+| Point-to-point fly | FC 3/52 (target) then 3/48 (go) | lon, lat f64; alt dm i16; speed dm/s u8. 3/48 alone → code 30 |
 | Flight mode | FC 4/3 | sport (7,1), smooth (8,1), normal (8,0) |
 | Limits | FC 4/5 | index 3 speed, 5 height, 7 distance; f32 |
 | RTH altitude | FC 4/8 | f32 |
@@ -190,6 +190,19 @@ VPS/SPS/PPS/SEI and an IDR roughly every 1.2 s, at about **0.4 Mbit/s**.
   +81 climbing at about 0.7 m/s, −27…−34 descending at about 0.3 m/s. Ground
   speed (offset 20) read single digits while hovering, probably cm/s.
 * The barometric height briefly read −0.5 m just before touchdown.
+
+## 4d. Second flight: fly-to and return home (2026-10-04)
+
+* **Fly-to ordering matters.** Sending 3/48 first was refused with **code 30**.
+  3/52 was then accepted (code 0), but the aircraft only stores the target and
+  kept hovering. The app sends **3/52 then 3/48**, which is what openfimi now does.
+* **Return home (3/26)** from 0.5 m away, at 2.7 m: accepted. The aircraft
+  climbed to about 6 m (not the configured 46 m), steadied, descended at about
+  0.3 m/s and landed on the home point. During RTH: `taskMode` 3, `apStatus`
+  2, and `flightPhase` stayed 3 until the final 1 m, then 4.
+* `get_rth_altitude` (4/9) reply body: f32 = 46.0 m.
+* `NavigationState.taskMode` is not a per-command mode: it read 4 throughout
+  take-off **and** the following hover, 5 for land and 3 for RTH.
 
 ## 5. Video
 

@@ -200,10 +200,21 @@ class Drone:
     def cancel_return_home(self, **kw) -> Reply | None:
         return self.send(commands.cancel_return_home(), **kw)
 
-    def fly_to(self, lat: float, lon: float, alt_m: float, speed_ms: float = 5.0) -> Reply | None:
-        """Point-to-point flight (the app's tap-to-fly): confirm, then GO."""
-        self.send(commands.fly_to_confirm())
-        return self.send(commands.fly_to(lat, lon, alt_m, speed_ms))
+    def fly_to(
+        self, lat: float, lon: float, alt_m: float, speed_ms: float = 5.0, **kw
+    ) -> Reply | None:
+        """Point-to-point flight (the app's tap-to-fly): set the target, then go.
+
+        Returns the reply to the go command; raises CommandRejected (with
+        ``check=True``) if either step is refused.
+        """
+        r = self.send(commands.fly_to(lat, lon, alt_m, speed_ms), **kw)
+        if r is not None and not r.ok:
+            return r
+        return self.send(commands.fly_to_start(), **kw)
+
+    def fly_to_exit(self, **kw) -> Reply | None:
+        return self.send(commands.fly_to_exit(), **kw)
 
     # -- missions ------------------------------------------------------------------
     def upload_mission(

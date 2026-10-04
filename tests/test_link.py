@@ -144,3 +144,14 @@ def test_decoders_reject_short_bodies():
         struct.pack("<ddfhhhhhbbfh", 2.0, 1.0, 3.0, 0, 0, 15, -20, 900, 0, 0, 50.0, 0)
     )
     assert (m.lat, m.lon, m.roll_deg, m.pitch_deg, m.yaw_deg) == (1.0, 2.0, 1.5, -2.0, 90.0)
+
+
+def test_fly_to_sets_target_then_starts(rig):
+    d = rig.drone
+    d.wait_for_telemetry(2)
+    assert d.send(commands.fly_to_start()).code == 30  # no target yet, as in flight
+    d.takeoff()
+    d.wait_until(lambda s: s.sport and s.sport.height_m > 1.0, 5)
+    lat0, lon0 = rig.sim.home
+    assert d.fly_to(lat0 + 0.0002, lon0, 30, speed_ms=10).ok
+    assert d.wait_until(lambda s: s.sport.height_m > 25 and s.sport.home_distance_m > 15, 15)
