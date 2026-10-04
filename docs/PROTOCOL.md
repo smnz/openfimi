@@ -233,6 +233,30 @@ VPS/SPS/PPS/SEI and an IDR roughly every 1.2 s, at about **0.4 Mbit/s**.
   = the two heartbeat refusal codes; also RCS, NFZS, CVS and P2P. openfimi does
   not redistribute FIMI's tables; they can be read from your own copy of the APK.
 
+## 4g. Full route with actions (7-point perimeter route, 2026-10-04)
+
+A 7-point route at 60 m and 5.6 m/s, with a single photo plus a POI on
+waypoints 2 and 4, loaded from the FIMI app database. Sent in the air: 14
+frames (all ACKed), read back identical, then 3/32.
+
+* **NavigationState during a route:** `taskMode` **1**, and `wpNUM` counts
+  waypoints *reached* (0 while climbing to waypoint 0, 1 on reaching it, …,
+  7 after the last). The aircraft climbs to the first waypoint's altitude
+  while flying toward it.
+* **End of route with finish action 4:** `taskMode` 3 with `apStatus` **5**
+  (a commanded RTH shows `apStatus` 2), `wpNUM` briefly 65535 then counting RTH
+  stages 0 → 3. It flew home at the route altitude (60 m, above the 46 m RTH
+  altitude), descended at about 1.7 m/s, and landed 0.5 m from the take-off point.
+* **Photo action (PHOTO, 1, 1):** fired on arrival. `CameraState` went 4 → 5 →
+  0 (shooting, saving, idle) and the camera mode went from 32 (video) to 16
+  (photo) when the route started.
+* **POI and yaw (Free heading):** the aircraft yawed to waypoint *k*'s POI as
+  soon as it left waypoint *k−1*, and the photo at *k* was taken at that yaw.
+  Earlier flights with hover-then-photo actions found photo *k* facing POI
+  *k+1*. The likely explanation: during a hover the aircraft has already
+  turned to the next leg's POI. Confirm with the photos.
+* Totals: 257 s, battery 100 → 85 %, battery temperature 31 → 39 °C.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte
