@@ -257,6 +257,14 @@ frames (all ACKed), read back identical, then 3/32.
   turned to the next leg's POI. Confirm with the photos.
 * Totals: 257 s, battery 100 → 85 %, battery temperature 31 → 39 °C.
 
+## 4h. Route start and photo timing (2026-10-04, 20 Hz logging)
+
+* As a route starts, `NavigationState.wpNUM` reads **65535** for a moment
+  before 0. Treat it as "no count yet".
+* At a photo waypoint the camera fired **about 0.7 s before** `wpNUM` ticked
+  (wp2: camera state 4 at 151.4 s, tick at 152.2 s; wp4: 215.7 s and 216.4 s).
+  Anything triggered by the tick is too late for that waypoint's photo.
+
 ## 5. Video
 
 Outer TYPE 2 records are RTP packets: a 12-byte big-endian header, a 2-byte

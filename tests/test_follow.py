@@ -106,3 +106,13 @@ def test_fly_route_drives_gimbal_in_sim():
         assert seq == [-30.0, -60.0, -90.0], (seq, events)  # wp2 (none) left it alone
     finally:
         rig.close()
+
+
+def test_ignores_65535_at_route_start():
+    # In flight the aircraft reported waypoint=65535 for a moment as the route
+    # started; treating it as "all reached" fired every waypoint at once.
+    f = GimbalFollower(_Stub(), route([(0, NONE), (-60, ARRIVAL), (-90, BEFORE)]))
+    assert f.decide(0xFFFF, at(0)) is None
+    assert not f.done
+    assert f.decide(0, at(10)) is None
+    assert f.decide(2, at(120)) == 1  # wp1 still fires on arrival

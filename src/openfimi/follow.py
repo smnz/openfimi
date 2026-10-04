@@ -19,7 +19,9 @@ Each waypoint has a :class:`~openfimi.mission.GimbalMode`:
   aircraft has left the previous waypoint (> ``depart_radius_m``), so a hover
   or photo at the previous waypoint keeps its own pitch.
 * ``ON_ARRIVAL`` (2): set the pitch when the waypoint is reached, e.g. for
-  video between waypoints.
+  video between waypoints.  Not for photo waypoints: in flight the photo
+  action fired about 0.7 s *before* the reached counter ticked, so the photo
+  is always taken at the previous pitch.
 
 ``NavigationState.waypoint`` counts waypoints *reached* and ticks on arrival,
 before that waypoint's action runs (flight telemetry).
@@ -39,6 +41,7 @@ from .mission import GimbalMode, Mission
 log = logging.getLogger(__name__)
 
 ROUTE_TASK_MODE = 1  # NavigationState.task_mode while a route is flying
+NO_WAYPOINT = 0xFFFF  # NavigationState.waypoint just after a route starts
 PITCH_MIN, PITCH_MAX = -90.0, 10.0
 _R = 6372800.0
 
@@ -117,6 +120,8 @@ class GimbalFollower:
         Marks the returned waypoint as done.
         """
         n = len(self.points)
+        if reached < 0 or reached > n + 1:
+            return None  # 65535 = "no count yet", seen at route start in flight
         choice = None
         # Waypoints reached since the last call: ON_ARRIVAL fires now, and a
         # BEFORE_ARRIVAL that never fired (route joined late) fires as a fallback.
@@ -186,6 +191,8 @@ class GimbalFollower:
                 self.route_seen = True
                 self.start_pos = pos
                 self.on_event("route started; gimbal follower active")
+            if nav.waypoint == NO_WAYPOINT:
+                continue  # the aircraft reports 65535 for a moment as the route starts
             k = self.decide(nav.waypoint, pos)
             if k is not None:
                 self._command(k)
@@ -196,7 +203,9 @@ class GimbalFollower:
                 self.commanded is not None
                 and g is not None
                 and not self._retried
-                and time.monotonic() - self._sent_at > self.verify_after_s
+                and self.verify_after_s
+                < time.monotonic() - self._sent_at
+                < self.verify_after_s + 2.0  # never fight a later change (wheel, pilot)
                 and abs(g.pitch_deg - self.commanded) > 2.0
             ):
                 self.on_event(f"gimbal at {g.pitch_deg:.1f}, re-sending {self.commanded:g}")

@@ -156,6 +156,8 @@ class SimAircraft:
                     self.speed = max(0.5, self.waypoints[i][26] / 10)
                     self.route.append((lat, lon, alt / 10))
                 self.route_i = self.reached = 0
+                # Real aircraft: wpNUM reads 65535 for a moment as the route starts.
+                self._sentinel_until = time.monotonic() + 0.5
                 self._go("route", self.route[0], 1)
         elif key == (Module.FC, 3, 38):
             wp = self.waypoints.get(body[0])
@@ -298,6 +300,8 @@ class SimAircraft:
             + bytes((1, 0, 1)),
         )
         wp = self.reached if self.activity == "route" else 0
+        if self.activity == "route" and time.monotonic() < getattr(self, "_sentinel_until", 0):
+            wp = 0xFFFF
         self._send(
             fc,
             hdr(3, 1) + bytes((self.task_mode, 2, self.ap_status)) + struct.pack("<H", wp),
